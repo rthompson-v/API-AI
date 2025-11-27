@@ -14,7 +14,7 @@ const client = new OpenAI({
 });
 
 //VECTOR STORE ID
-const VECTOR_STORE_ID = "vs_6916291be5348191a8c802a2f6393713";
+const VECTOR_STORE_ID = process.env.VECTOR_STORE_ID;
 
 app.post("/chat", async (req, res) => {
   try {
