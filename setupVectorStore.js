@@ -3,6 +3,7 @@ import fs from "fs";
 import path from "path";
 import dotenv from "dotenv";
 
+//simplemente exportar este archivo y correrlo una vez para crear el vector store
 // Para que funcione path.join en ESM (Node con "type": "module")
 import { fileURLToPath } from "url";
 
