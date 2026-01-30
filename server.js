@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import OpenAI from "openai";
+import mysql from "mysql2/promise";
 
 dotenv.config();
 
@@ -72,6 +73,30 @@ function validateUserMessages(messages) {
 }
 //VECTOR STORE ID
 const VECTOR_STORE_ID = process.env.VECTOR_STORE_ID;
+
+
+// ---- DB (MySQL) ----
+const pool = mysql.createPool({
+  host: process.env.DB_HOST,
+  port: Number(process.env.DB_PORT || 3306),
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME,
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0,
+});
+
+// (opcional) test de conexión
+pool.getConnection()
+  .then(conn => {
+    console.log("Conectado a MySQL");
+    conn.release();
+  })
+  .catch(err => {
+    console.error("Error conectando a MySQL:", err);
+  });
+
 
 app.post("/chat", async (req, res) => {
   try {
@@ -145,6 +170,28 @@ Reglas:
   } catch (err) {
     console.error("Error en /chat:", err);
     res.status(500).json({ error: "Error en el servidor de IA" });
+  }
+});
+
+app.get("/candidates/profile-view", async (req, res) => {
+  try {
+    const [rows] = await pool.query(`
+      SELECT *
+      FROM v_candidate_profile
+      LIMIT 100
+    `);
+
+    res.status(200).json({
+      ok: true,
+      count: rows.length,
+      data: rows,
+    });
+  } catch (err) {
+    console.error("Error en /candidates/profile-view:", err);
+    res.status(500).json({
+      ok: false,
+      error: "Error consultando la vista v_candidate_profile",
+    });
   }
 });
 
