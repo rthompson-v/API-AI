@@ -178,7 +178,6 @@ app.get("/candidates/profile-view", async (req, res) => {
     const [rows] = await pool.query(`
       SELECT *
       FROM v_candidate_profile
-      LIMIT 100
     `);
 
     res.status(200).json({
