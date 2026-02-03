@@ -215,7 +215,6 @@ app.post("/candidates/search", async (req, res) => {
       // si quieres incluir fechas como texto:
       "available_from",
       "available_to",
-      "effective_month",
       // numéricos como texto (para q tipo "70" también matcheen):
       "years_experience",
       "english_score",
