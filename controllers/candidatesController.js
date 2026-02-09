@@ -147,3 +147,124 @@ export async function candidatesSearch(req, res) {
     return res.status(500).json({ ok: false, error: "Error buscando candidatos" });
   }
 }
+
+export async function profileViewByRole(req, res) {
+  try {
+    const role = String(req.query?.role ?? req.body?.role ?? "normal").toLowerCase();
+    const limit = Math.min(Number(req.query?.limit ?? req.body?.limit ?? 100), 1000);
+    const offset = Math.max(Number(req.query?.offset ?? req.body?.offset ?? 0), 0);
+
+    const [rows] = await pool.query(
+      `
+      SELECT *
+      FROM v_candidate_profile
+      ORDER BY candidate_id DESC
+      LIMIT ? OFFSET ?
+    `,
+      [limit, offset]
+    );
+
+    const fieldSpecs = {
+      normal: [
+        "full_name",
+        "years_experience",
+        "skillset",
+        "last_update",
+        "location",
+        "english_score",
+        "linkedin",
+      ],
+      usuario: [
+        "full_name",
+        "years_experience",
+        "skillset",
+        "last_update",
+        "location",
+        "english_score",
+        "linkedin",
+        "phone",
+        "email",
+        "cv",
+      ],
+      gerente: [
+        "full_name",
+        "years_experience",
+        "skillset",
+        "last_update",
+        "location",
+        "english_score",
+        "linkedin",
+        "phone",
+        "email",
+        "cv",
+        "tarifa",
+        "costo_expectativa",
+      ],
+    };
+
+    const aliases = {
+      full_name: ["full_name", "name", "candidate_name"],
+      years_experience: [
+        "years_experience",
+        "experiencia",
+        "experience",
+        "yrs_experience",
+      ],
+      skillset: ["skillset", "skills", "skill_set"],
+      last_update: [
+        "last_update",
+        "updated_at",
+        "lastupdate",
+        "historial",
+        "history",
+      ],
+      location: ["location", "place", "city"],
+      english_score: ["english_score", "english_level", "english"],
+      linkedin: ["linkedin", "linkedin_url"],
+      phone: ["phone", "telefono", "phone_number"],
+      email: ["email", "email_address"],
+      cv: ["cv", "cv_url", "resume", "resume_url"],
+      tarifa: [
+        "tarifa",
+        "rate",
+        "suggested_customer_contractor_rate",
+        "suggested_rate",
+      ],
+      costo_expectativa: [
+        "costo_expectativa",
+        "cost_expectation",
+        "expected_cost",
+        "cost_text",
+      ],
+    };
+
+    function resolveField(row, key) {
+      const names = aliases[key] || [key];
+      for (const n of names) {
+        if (Object.prototype.hasOwnProperty.call(row, n) && row[n] !== undefined) {
+          return row[n];
+        }
+      }
+      return null;
+    }
+
+    const keysToUse = fieldSpecs[role] || fieldSpecs.normal;
+
+    const data = rows.map((r) => {
+      const out = {};
+      for (const k of keysToUse) {
+        const v = resolveField(r, k);
+        if (v !== null && v !== undefined) out[k] = v;
+      }
+      if (Object.prototype.hasOwnProperty.call(r, "candidate_id")) {
+        out.candidate_id = r.candidate_id;
+      }
+      return out;
+    });
+
+    return res.status(200).json({ ok: true, role, count: data.length, data });
+  } catch (err) {
+    console.error("Error en /candidates/profile-view-by-role:", err);
+    return res.status(500).json({ ok: false, error: "Error consultando la vista v_candidate_profile" });
+  }
+}
