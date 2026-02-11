@@ -1,57 +1,3 @@
-// Función para agregar usuario Reclutador/Gerente
-export async function addRecruiterManager(req, res) {
-  try {
-    const {
-      Name,
-      Experiencia,
-      Skillset,
-      Location,
-      EnglishLevel,
-      Linkedin,
-      Telefono,
-      Email,
-      CV,
-      Expectativas,
-      Esquema,
-      Rol,
-      Tecnologia
-    } = req.body;
-
-    // Validación básica
-    if (!Name || !Email || !Rol) {
-      return res.status(400).json({ ok: false, error: "Faltan campos obligatorios: Name, Email, Rol" });
-    }
-
-    // Generar candidate_code único (puedes mejorar este método)
-    const candidateCode = `RM-${Date.now()}`;
-
-    const sql = `INSERT INTO candidate (
-      candidate_code, full_name, phone, email, cv_url, location_id, role_id, english_score, years_experience, expectativas, esquema, skillset, tecnologia, linkedin
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
-    const values = [
-      candidateCode,
-      Name,
-      Telefono,
-      Email,
-      CV,
-      Location,
-      Rol,
-      EnglishLevel,
-      Experiencia,
-      Expectativas,
-      Esquema,
-      Skillset,
-      Tecnologia,
-      Linkedin
-    ];
-
-    const [result] = await pool.query(sql, values);
-    return res.status(201).json({ ok: true, id: result.insertId, message: "Usuario agregado correctamente" });
-  } catch (err) {
-    console.error("Error en addRecruiterManager:", err);
-    return res.status(500).json({ ok: false, error: "Error agregando usuario Reclutador/Gerente" });
-  }
-}
 import pool from "../db.js";
 
 export async function profileView(req, res) {
@@ -320,5 +266,265 @@ export async function profileViewByRole(req, res) {
   } catch (err) {
     console.error("Error en /candidates/profile-view-by-role:", err);
     return res.status(500).json({ ok: false, error: "Error consultando la vista v_candidate_profile" });
+  }
+}
+
+// Función para agregar usuario Reclutador/Gerente
+export async function addRecruiterManager(req, res) {
+  const conn = await pool.getConnection();
+
+  try {
+    const {
+      Name,
+      Experiencia,
+      Skillset,     // opcional: string (texto libre) o array; lo guardaremos en NOTE
+      Location,     // puede ser ID o nombre
+      EnglishLevel, // 0-100
+      Linkedin,
+      Telefono,
+      Email,
+      CV,
+      Expectativas, // texto libre -> candidate_compensation.cost_text
+      Esquema,      // texto libre -> candidate_compensation.scheme
+      Rol,          // puede ser ID o nombre
+      Tecnologia,   // puede ser ID o nombre (o array si quieres varias)
+      Modulos,      // opcional: { module, submodule } o array de esos
+      Visa          // no existe columna -> candidate_note
+    } = req.body;
+
+    // Validación mínima
+    if (!Name || !Rol) {
+      return res.status(400).json({
+        ok: false,
+        error: "Faltan campos obligatorios: Name, Rol"
+      });
+    }
+
+    const toArray = (v) => {
+      if (!v) return [];
+      return Array.isArray(v) ? v : [v];
+    };
+
+    // Helpers para resolver IDs por nombre (o aceptar ID directo)
+    const resolveId = async ({ table, idCol, nameCol, value }) => {
+      if (value === null || value === undefined || value === "") return null;
+
+      // si ya es número -> lo tratamos como ID
+      if (typeof value === "number") return value;
+      if (/^\d+$/.test(String(value).trim())) return Number(value);
+
+      // si es nombre -> buscamos
+      const [rows] = await conn.query(
+        `SELECT ${idCol} AS id FROM ${table} WHERE ${nameCol} = ? LIMIT 1`,
+        [String(value).trim()]
+      );
+      return rows.length ? rows[0].id : null;
+    };
+
+    // Resolver FKs
+    const locationId = await resolveId({
+      table: "catalog_location",
+      idCol: "location_id",
+      nameCol: "name",
+      value: Location
+    });
+
+    const roleId = await resolveId({
+      table: "catalog_role",
+      idCol: "role_id",
+      nameCol: "name",
+      value: Rol
+    });
+
+    if (!roleId) {
+      return res.status(400).json({
+        ok: false,
+        error: "Rol inválido: no existe en catalog_role (manda role_id o name exacto)."
+      });
+    }
+
+    // Tecnología: permitimos 1 o varias
+    const techValues = toArray(Tecnologia);
+    const techIds = [];
+    for (const t of techValues) {
+      const techId = await resolveId({
+        table: "catalog_technology",
+        idCol: "technology_id",
+        nameCol: "name",
+        value: t
+      });
+      if (!techId) {
+        return res.status(400).json({
+          ok: false,
+          error: `Tecnologia inválida: "${t}" no existe en catalog_technology (manda technology_id o name exacto).`
+        });
+      }
+      techIds.push(techId);
+    }
+
+    // Normalizar módulos: array de { technology, module, submodule } o { module, submodule }
+    // Si no trae technology, usamos la primera tecnologia (o la única)
+    const modulesArr = toArray(Modulos).map((m) => {
+      if (!m) return null;
+      if (typeof m === "string") {
+        // si mandan "Module/Submodule" en texto, lo separamos simple
+        const [moduleName, submoduleName] = m.split("/").map(x => x?.trim()).filter(Boolean);
+        return { module: moduleName || null, submodule: submoduleName || null };
+      }
+      return {
+        technology: m.technology ?? null,
+        module: m.module ?? null,
+        submodule: m.submodule ?? null
+      };
+    }).filter(Boolean);
+
+    const candidateCode = `RM-${Date.now()}`;
+
+    await conn.beginTransaction();
+
+    // 1) INSERT candidate (datos base)
+    const [candRes] = await conn.query(
+      `INSERT INTO candidate (
+        candidate_code, full_name, phone, email, cv_url,
+        location_id, role_id, english_score, years_experience
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        candidateCode,
+        Name,
+        Telefono || null,
+        Email || null,
+        CV || null,
+        locationId,
+        roleId,
+        EnglishLevel ?? null,
+        Experiencia ?? null
+      ]
+    );
+
+    const candidateId = candRes.insertId;
+
+    // 2) INSERT compensation (Expectativas + Esquema)
+    if (Expectativas || Esquema) {
+      await conn.query(
+        `INSERT INTO candidate_compensation (candidate_id, cost_text, scheme)
+         VALUES (?, ?, ?)`,
+        [candidateId, Expectativas || null, Esquema || null]
+      );
+    }
+
+    // 3) INSERT notes (Skillset, Visa) usando candidate_note
+    //    (tu esquema no tiene columnas directas para eso)
+    const notesToInsert = [];
+    if (Skillset) notesToInsert.push(["SKILLSET", typeof Skillset === "string" ? Skillset : JSON.stringify(Skillset)]);
+    if (Visa) notesToInsert.push(["VISA", typeof Visa === "string" ? Visa : JSON.stringify(Visa)]);
+
+    if (notesToInsert.length) {
+      const rows = notesToInsert.map(([type, text]) => [candidateId, type, text]);
+      await conn.query(
+        `INSERT INTO candidate_note (candidate_id, note_type, note_text) VALUES ?`,
+        [rows]
+      );
+    }
+
+    // 4) INSERT candidate_stack (Tecnologia + Modulos/Submodulos)
+    // Si no hay Modulos, insertamos solo tecnología (module_id/submodule_id null)
+    const stackRows = [];
+
+    const resolveModuleId = async (technologyId, moduleName) => {
+      if (!moduleName) return null;
+      const [r] = await conn.query(
+        `SELECT module_id FROM catalog_module WHERE technology_id = ? AND name = ? LIMIT 1`,
+        [technologyId, moduleName]
+      );
+      return r.length ? r[0].module_id : null;
+    };
+
+    const resolveSubmoduleId = async (moduleId, submoduleName) => {
+      if (!moduleId || !submoduleName) return null;
+      const [r] = await conn.query(
+        `SELECT submodule_id FROM catalog_submodule WHERE module_id = ? AND name = ? LIMIT 1`,
+        [moduleId, submoduleName]
+      );
+      return r.length ? r[0].submodule_id : null;
+    };
+
+    if (modulesArr.length === 0) {
+      // solo tecnologías
+      for (const technologyId of techIds) {
+        stackRows.push([candidateId, technologyId, null, null]);
+      }
+    } else {
+      for (const m of modulesArr) {
+        // si viene technology por nombre/id en el módulo, lo resolvemos; si no, tomamos la primera tech
+        let technologyId = techIds[0];
+        if (m.technology) {
+          const tId = await resolveId({
+            table: "catalog_technology",
+            idCol: "technology_id",
+            nameCol: "name",
+            value: m.technology
+          });
+          if (!tId) {
+            return res.status(400).json({
+              ok: false,
+              error: `Tecnologia en Modulos inválida: "${m.technology}"`
+            });
+          }
+          technologyId = tId;
+        }
+
+        const moduleId = await resolveModuleId(technologyId, m.module);
+        // Si mandan module que no existe, lo puedes tratar como error:
+        if (m.module && !moduleId) {
+          return res.status(400).json({
+            ok: false,
+            error: `Módulo inválido: "${m.module}" no existe para technology_id=${technologyId}.`
+          });
+        }
+
+        const submoduleId = await resolveSubmoduleId(moduleId, m.submodule);
+        if (m.submodule && !submoduleId) {
+          return res.status(400).json({
+            ok: false,
+            error: `Submódulo inválido: "${m.submodule}" no existe para module_id=${moduleId}.`
+          });
+        }
+
+        stackRows.push([candidateId, technologyId, moduleId, submoduleId]);
+      }
+    }
+
+    if (stackRows.length) {
+      await conn.query(
+        `INSERT IGNORE INTO candidate_stack (candidate_id, technology_id, module_id, submodule_id)
+         VALUES ?`,
+        [stackRows]
+      );
+    }
+
+    await conn.commit();
+
+    return res.status(201).json({
+      ok: true,
+      candidate_id: candidateId,
+      candidate_code: candidateCode,
+      message: "Candidato agregado correctamente (candidate + stack + compensation + notes)"
+    });
+
+  } catch (err) {
+    try { await conn.rollback(); } catch (_) {}
+    console.error("Error en addRecruiterManager:", err);
+
+    // chequeo de constraints comunes
+    if (err?.code === "ER_CHECK_CONSTRAINT_VIOLATED") {
+      return res.status(400).json({ ok: false, error: "english_score debe estar entre 0 y 100 (o null)." });
+    }
+
+    return res.status(500).json({
+      ok: false,
+      error: "Error agregando candidato multi-tabla"
+    });
+  } finally {
+    conn.release();
   }
 }
