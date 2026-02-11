@@ -448,6 +448,40 @@ export async function addRecruiterManager(req, res) {
       return r.length ? r[0].submodule_id : null;
     };
 
+    const getOrCreateModuleId = async (technologyId, moduleName) => {
+  if (!moduleName) return null;
+
+  const [rows] = await conn.query(
+    `SELECT module_id FROM catalog_module WHERE technology_id = ? AND module_catalogname = ? LIMIT 1`,
+    [technologyId, moduleName]
+  );
+  if (rows.length) return rows[0].module_id;
+
+  const [ins] = await conn.query(
+    `INSERT INTO catalog_module (technology_id, module_catalogname) VALUES (?, ?)`,
+    [technologyId, moduleName]
+  );
+  return ins.insertId;
+};
+
+const getOrCreateSubmoduleId = async (moduleId, submoduleName) => {
+  if (!moduleId || !submoduleName) return null;
+
+  const [rows] = await conn.query(
+    `SELECT submodule_id FROM catalog_submodule WHERE module_id = ? AND subm_catalog_name = ? LIMIT 1`,
+    [moduleId, submoduleName]
+  );
+  if (rows.length) return rows[0].submodule_id;
+
+  const [ins] = await conn.query(
+    `INSERT INTO catalog_submodule (module_id, subm_catalog_name) VALUES (?, ?)`,
+    [moduleId, submoduleName]
+  );
+  return ins.insertId;
+};
+
+
+
     if (modulesArr.length === 0) {
       // solo tecnologías
       for (const technologyId of techIds) {
@@ -455,40 +489,32 @@ export async function addRecruiterManager(req, res) {
       }
     } else {
       for (const m of modulesArr) {
-        // si viene technology por nombre/id en el módulo, lo resolvemos; si no, tomamos la primera tech
-        let technologyId = techIds[0];
-        if (m.technology) {
-          const tId = await resolveId({
-            table: "catalog_technology",
-            idCol: "technology_id",
-            nameCol: "name",
-            value: m.technology
-          });
-          if (!tId) {
-            return res.status(400).json({
-              ok: false,
-              error: `Tecnologia en Modulos inválida: "${m.technology}"`
-            });
-          }
-          technologyId = tId;
-        }
+  let technologyId = techIds[0];
 
-        const moduleId = await resolveModuleId(technologyId, m.module);
-        // Si mandan module que no existe, lo puedes tratar como error:
-        if (m.module && !moduleId) {
-          return res.status(400).json({
-            ok: false,
-            error: `Módulo inválido: "${m.module}" no existe para technology_id=${technologyId}.`
-          });
-        }
+  // Si el módulo trae technology explícita, resolverla con la MISMA columna correcta
+  if (m.technology) {
+    const tId = await resolveId({
+      table: "catalog_technology",
+      idCol: "technology_id",
+      nameCol: "ct_name_tech", // <-- importante
+      value: m.technology
+    });
 
-        const submoduleId = await resolveSubmoduleId(moduleId, m.submodule);
-        if (m.submodule && !submoduleId) {
-          return res.status(400).json({
-            ok: false,
-            error: `Submódulo inválido: "${m.submodule}" no existe para module_id=${moduleId}.`
-          });
-        }
+    if (!tId) {
+      return res.status(400).json({
+        ok: false,
+        error: `Tecnologia en Modulos inválida: "${m.technology}"`
+      });
+    }
+    technologyId = tId;
+  }
+
+
+        const moduleName = (m.module || "").trim().replace(/^phyton$/i, "Python");
+        const submoduleName = (m.submodule || "").trim().replace(/^phyton$/i, "Python");
+        const moduleId = await getOrCreateModuleId(technologyId, moduleName);
+        const submoduleId = await getOrCreateSubmoduleId(moduleId, submoduleName);
+        
 
         stackRows.push([candidateId, technologyId, moduleId, submoduleId]);
       }
