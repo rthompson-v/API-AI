@@ -350,7 +350,7 @@ export async function addRecruiterManager(req, res) {
       const techId = await resolveId({
         table: "catalog_technology",
         idCol: "technology_id",
-        nameCol: "name",
+        nameCol: "ct_name_tech",
         value: t
       });
       if (!techId) {
