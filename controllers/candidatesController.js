@@ -1,3 +1,57 @@
+// Función para agregar usuario Reclutador/Gerente
+export async function addRecruiterManager(req, res) {
+  try {
+    const {
+      Name,
+      Experiencia,
+      Skillset,
+      Location,
+      EnglishLevel,
+      Linkedin,
+      Telefono,
+      Email,
+      CV,
+      Expectativas,
+      Esquema,
+      Rol,
+      Tecnologia
+    } = req.body;
+
+    // Validación básica
+    if (!Name || !Email || !Rol) {
+      return res.status(400).json({ ok: false, error: "Faltan campos obligatorios: Name, Email, Rol" });
+    }
+
+    // Generar candidate_code único (puedes mejorar este método)
+    const candidateCode = `RM-${Date.now()}`;
+
+    const sql = `INSERT INTO candidate (
+      candidate_code, full_name, phone, email, cv_url, location_id, role_id, english_score, years_experience, expectativas, esquema, skillset, tecnologia, linkedin
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+    const values = [
+      candidateCode,
+      Name,
+      Telefono,
+      Email,
+      CV,
+      Location,
+      Rol,
+      EnglishLevel,
+      Experiencia,
+      Expectativas,
+      Esquema,
+      Skillset,
+      Tecnologia,
+      Linkedin
+    ];
+
+    const [result] = await pool.query(sql, values);
+    return res.status(201).json({ ok: true, id: result.insertId, message: "Usuario agregado correctamente" });
+  } catch (err) {
+    console.error("Error en addRecruiterManager:", err);
+    return res.status(500).json({ ok: false, error: "Error agregando usuario Reclutador/Gerente" });
+  }
+}
 import pool from "../db.js";
 
 export async function profileView(req, res) {
