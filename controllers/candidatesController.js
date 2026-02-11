@@ -268,7 +268,7 @@ export async function profileViewByRole(req, res) {
     return res.status(500).json({ ok: false, error: "Error consultando la vista v_candidate_profile" });
   }
 }
-
+//Insercion------------------------------------------------------------------------------------------------------------------------------
 // Función para agregar usuario Reclutador/Gerente
 export async function addRecruiterManager(req, res) {
   const conn = await pool.getConnection();
@@ -433,7 +433,7 @@ export async function addRecruiterManager(req, res) {
     const resolveModuleId = async (technologyId, moduleName) => {
       if (!moduleName) return null;
       const [r] = await conn.query(
-        `SELECT module_id FROM catalog_module WHERE technology_id = ? AND name = ? LIMIT 1`,
+        `SELECT module_id FROM catalog_module WHERE technology_id = ? AND module_catalogname = ? LIMIT 1`,
         [technologyId, moduleName]
       );
       return r.length ? r[0].module_id : null;
@@ -442,7 +442,7 @@ export async function addRecruiterManager(req, res) {
     const resolveSubmoduleId = async (moduleId, submoduleName) => {
       if (!moduleId || !submoduleName) return null;
       const [r] = await conn.query(
-        `SELECT submodule_id FROM catalog_submodule WHERE module_id = ? AND name = ? LIMIT 1`,
+        `SELECT submodule_id FROM catalog_submodule WHERE module_id = ? AND subm_catalog_name = ? LIMIT 1`,
         [moduleId, submoduleName]
       );
       return r.length ? r[0].submodule_id : null;
