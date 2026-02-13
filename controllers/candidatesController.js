@@ -554,3 +554,74 @@ const getOrCreateSubmoduleId = async (moduleId, submoduleName) => {
     conn.release();
   }
 }
+
+export async function getLocations(req, res) {
+  try {
+    const [rows] = await pool.query(
+      `SELECT location_id AS id, name
+       FROM catalog_location
+       ORDER BY name`
+    );
+    res.json({ ok: true, data: rows });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: "Error obteniendo locations" });
+  }
+}
+
+export async function getRoles(req, res) {
+  try {
+    const [rows] = await pool.query(
+      `SELECT role_id AS id, name
+       FROM catalog_role
+       ORDER BY name`
+    );
+    res.json({ ok: true, data: rows });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: "Error obteniendo roles" });
+  }
+}
+
+export async function getTechnologies(req, res) {
+  try {
+    const [rows] = await pool.query(
+      `SELECT technology_id AS id, ct_name_tech AS name
+       FROM catalog_technology
+       ORDER BY ct_name_tech`
+    );
+    res.json({ ok: true, data: rows });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: "Error obteniendo tecnologías" });
+  }
+}
+
+export async function getModulesByTechnology(req, res) {
+  try {
+    const { technology_id } = req.params;
+    const [rows] = await pool.query(
+      `SELECT module_id AS id, module_catalogname AS name
+       FROM catalog_module
+       WHERE technology_id = ?
+       ORDER BY module_catalogname`,
+      [technology_id]
+    );
+    res.json({ ok: true, data: rows });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: "Error obteniendo módulos" });
+  }
+}
+
+export async function getSubmodulesByModule(req, res) {
+  try {
+    const { module_id } = req.params;
+    const [rows] = await pool.query(
+      `SELECT submodule_id AS id, subm_catalog_name AS name
+       FROM catalog_submodule
+       WHERE module_id = ?
+       ORDER BY subm_catalog_name`,
+      [module_id]
+    );
+    res.json({ ok: true, data: rows });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: "Error obteniendo submódulos" });
+  }
+}
