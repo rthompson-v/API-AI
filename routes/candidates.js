@@ -1,5 +1,7 @@
 import express from "express";
-import { profileView, candidatesSearch, profileViewByRole, addRecruiterManager} from "../controllers/candidatesController.js";
+import { profileView, candidatesSearch, profileViewByRole, addRecruiterManager, getLocations, getRoles, getTechnologies, getSubmodulesByModule
+, getModulesByTechnology
+} from "../controllers/candidatesController.js";
 
 const router = express.Router();
 
