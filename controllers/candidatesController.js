@@ -625,3 +625,384 @@ export async function getSubmodulesByModule(req, res) {
     res.status(500).json({ ok: false, error: "Error obteniendo submódulos" });
   }
 }
+
+export async function updateCandidateByCode(req, res) {
+  const conn = await pool.getConnection();
+
+  try {
+    const { candidate_code } = req.params;
+
+    const {
+      // candidate
+      Name,
+      Telefono,
+      Email,
+      CV,
+      Location,       // id o nombre
+      Rol,            // id o nombre
+      EnglishLevel,   // 0-100
+      Experiencia,
+
+      // historicos / notas
+      Expectativas,
+      Esquema,
+      Skillset,
+      Visa,
+
+      // stack
+      Tecnologia,     // id/nombre o array
+      Modulos,        // {technology,module,submodule} o array
+      replaceStack    // boolean
+    } = req.body;
+
+    if (!candidate_code) {
+      return res.status(400).json({ ok: false, error: "Falta candidate_code en params" });
+    }
+
+    // helper: array
+    const toArray = (v) => (!v ? [] : Array.isArray(v) ? v : [v]);
+
+    // helper: resolver ID por nombre o aceptar ID
+    const resolveId = async ({ table, idCol, nameCol, value }) => {
+      if (value === null || value === undefined || value === "") return null;
+
+      if (typeof value === "number") return value;
+      if (/^\d+$/.test(String(value).trim())) return Number(value);
+
+      const [rows] = await conn.query(
+        `SELECT ${idCol} AS id FROM ${table} WHERE ${nameCol} = ? LIMIT 1`,
+        [String(value).trim()]
+      );
+      return rows.length ? rows[0].id : null;
+    };
+
+    // helpers: crear modulo/submodulo si no existe
+    const getOrCreateModuleId = async (technologyId, moduleName) => {
+      if (!moduleName) return null;
+
+      const [rows] = await conn.query(
+        `SELECT module_id FROM catalog_module
+         WHERE technology_id = ? AND module_catalogname = ? LIMIT 1`,
+        [technologyId, moduleName]
+      );
+      if (rows.length) return rows[0].module_id;
+
+      const [ins] = await conn.query(
+        `INSERT INTO catalog_module (technology_id, module_catalogname) VALUES (?, ?)`,
+        [technologyId, moduleName]
+      );
+      return ins.insertId;
+    };
+
+    const getOrCreateSubmoduleId = async (moduleId, submoduleName) => {
+      if (!moduleId || !submoduleName) return null;
+
+      const [rows] = await conn.query(
+        `SELECT submodule_id FROM catalog_submodule
+         WHERE module_id = ? AND subm_catalog_name = ? LIMIT 1`,
+        [moduleId, submoduleName]
+      );
+      if (rows.length) return rows[0].submodule_id;
+
+      const [ins] = await conn.query(
+        `INSERT INTO catalog_submodule (module_id, subm_catalog_name) VALUES (?, ?)`,
+        [moduleId, submoduleName]
+      );
+      return ins.insertId;
+    };
+
+    await conn.beginTransaction();
+
+    // 1) buscar candidato
+    const [candRows] = await conn.query(
+      `SELECT candidate_id FROM candidate WHERE candidate_code = ? LIMIT 1`,
+      [candidate_code]
+    );
+
+    if (!candRows.length) {
+      await conn.rollback();
+      return res.status(404).json({ ok: false, error: "Candidato no encontrado" });
+    }
+
+    const candidateId = candRows[0].candidate_id;
+
+    // 2) UPDATE candidate dinámico
+    const set = [];
+    const vals = [];
+
+    if (Name !== undefined) { set.push("full_name = ?"); vals.push(Name); }
+    if (Telefono !== undefined) { set.push("phone = ?"); vals.push(Telefono || null); }
+    if (Email !== undefined) { set.push("email = ?"); vals.push(Email || null); }
+    if (CV !== undefined) { set.push("cv_url = ?"); vals.push(CV || null); }
+
+    if (EnglishLevel !== undefined) { set.push("english_score = ?"); vals.push(EnglishLevel ?? null); }
+    if (Experiencia !== undefined) { set.push("years_experience = ?"); vals.push(Experiencia ?? null); }
+
+    if (Location !== undefined) {
+      // ajusta nameCol si tu location no usa "name"
+      const locationId = await resolveId({
+        table: "catalog_location",
+        idCol: "location_id",
+        nameCol: "name",
+        value: Location
+      });
+      set.push("location_id = ?");
+      vals.push(locationId);
+    }
+
+    if (Rol !== undefined) {
+      // ajusta nameCol si tu role no usa "name"
+      const roleId = await resolveId({
+        table: "catalog_role",
+        idCol: "role_id",
+        nameCol: "name",
+        value: Rol
+      });
+
+      if (!roleId) {
+        await conn.rollback();
+        return res.status(400).json({ ok: false, error: "Rol inválido" });
+      }
+
+      set.push("role_id = ?");
+      vals.push(roleId);
+    }
+
+    if (set.length) {
+      vals.push(candidateId);
+      await conn.query(
+        `UPDATE candidate SET ${set.join(", ")} WHERE candidate_id = ?`,
+        vals
+      );
+    }
+
+    // 3) compensation histórico
+    if (Expectativas !== undefined || Esquema !== undefined) {
+      await conn.query(
+        `INSERT INTO candidate_compensation (candidate_id, cost_text, scheme)
+         VALUES (?, ?, ?)`,
+        [candidateId, Expectativas || null, Esquema || null]
+      );
+    }
+
+    // 4) notas históricas
+    const notes = [];
+    if (Skillset !== undefined && Skillset !== "") notes.push(["SKILLSET", typeof Skillset === "string" ? Skillset : JSON.stringify(Skillset)]);
+    if (Visa !== undefined && Visa !== "") notes.push(["VISA", typeof Visa === "string" ? Visa : JSON.stringify(Visa)]);
+
+    if (notes.length) {
+      const rows = notes.map(([type, text]) => [candidateId, type, text]);
+      await conn.query(
+        `INSERT INTO candidate_note (candidate_id, note_type, note_text) VALUES ?`,
+        [rows]
+      );
+    }
+
+    // 5) stack
+    if (replaceStack) {
+      await conn.query(`DELETE FROM candidate_stack WHERE candidate_id = ?`, [candidateId]);
+    }
+
+    // 5a) tecnologías (sin módulos)
+    if (Tecnologia !== undefined) {
+      const techValues = toArray(Tecnologia);
+
+      for (const t of techValues) {
+        const techId = await resolveId({
+          table: "catalog_technology",
+          idCol: "technology_id",
+          nameCol: "ct_name_tech",
+          value: t
+        });
+
+        if (!techId) {
+          await conn.rollback();
+          return res.status(400).json({ ok: false, error: `Tecnologia inválida: "${t}"` });
+        }
+
+        await conn.query(
+          `INSERT IGNORE INTO candidate_stack (candidate_id, technology_id, module_id, submodule_id)
+           VALUES (?, ?, NULL, NULL)`,
+          [candidateId, techId]
+        );
+      }
+    }
+
+    // 5b) módulos/submódulos
+    if (Modulos !== undefined) {
+      const mods = toArray(Modulos);
+
+      for (const m of mods) {
+        // technology requerido por cada módulo para no adivinar
+        if (!m?.technology) {
+          await conn.rollback();
+          return res.status(400).json({
+            ok: false,
+            error: "En Modulos falta technology (manda id o nombre en m.technology)."
+          });
+        }
+
+        const technologyId = await resolveId({
+          table: "catalog_technology",
+          idCol: "technology_id",
+          nameCol: "ct_name_tech",
+          value: m.technology
+        });
+
+        if (!technologyId) {
+          await conn.rollback();
+          return res.status(400).json({ ok: false, error: `Tecnologia inválida en Modulos: "${m.technology}"` });
+        }
+
+        const moduleName = String(m.module || "").trim();
+        const submoduleName = String(m.submodule || "").trim();
+
+        const moduleId = await getOrCreateModuleId(technologyId, moduleName || null);
+        const submoduleId = await getOrCreateSubmoduleId(moduleId, submoduleName || null);
+
+        await conn.query(
+          `INSERT IGNORE INTO candidate_stack (candidate_id, technology_id, module_id, submodule_id)
+           VALUES (?, ?, ?, ?)`,
+          [candidateId, technologyId, moduleId, submoduleId]
+        );
+      }
+    }
+
+    await conn.commit();
+
+    return res.json({
+      ok: true,
+      candidate_id: candidateId,
+      candidate_code,
+      message: "Candidato actualizado correctamente"
+    });
+
+  } catch (err) {
+    try { await conn.rollback(); } catch (_) {}
+    console.error("Error en updateCandidateByCode:", err);
+
+    if (err?.code === "ER_CHECK_CONSTRAINT_VIOLATED") {
+      return res.status(400).json({ ok: false, error: "english_score debe estar entre 0 y 100 (o null)." });
+    }
+
+    return res.status(500).json({ ok: false, error: "Error actualizando candidato" });
+  } finally {
+    conn.release();
+  }
+}
+
+export async function listCandidates(req, res) {
+  try {
+    const q = (req.query.q || "").trim();
+
+    const sql = `
+      SELECT
+        c.candidate_code,
+        c.full_name,
+        c.email,
+        c.phone,
+        r.name AS role_name,
+        l.name AS location_name,
+        c.updated_at
+      FROM candidate c
+      LEFT JOIN catalog_role r ON r.role_id = c.role_id
+      LEFT JOIN catalog_location l ON l.location_id = c.location_id
+      WHERE (? = '' OR c.candidate_code LIKE CONCAT('%', ?, '%')
+                  OR c.full_name LIKE CONCAT('%', ?, '%')
+                  OR c.email LIKE CONCAT('%', ?, '%'))
+      ORDER BY c.updated_at DESC
+      LIMIT 100
+    `;
+
+    const [rows] = await pool.query(sql, [q, q, q, q]);
+    res.json({ ok: true, data: rows });
+  } catch (e) {
+    console.error("listCandidates:", e);
+    res.status(500).json({ ok: false, error: "Error listando candidatos" });
+  }
+}
+
+
+export async function getCandidateByCode(req, res) {
+  const conn = await pool.getConnection();
+  try {
+    const { candidate_code } = req.params;
+
+    const [candRows] = await conn.query(
+      `SELECT *
+       FROM candidate
+       WHERE candidate_code = ?
+       LIMIT 1`,
+      [candidate_code]
+    );
+
+    if (!candRows.length) {
+      return res.status(404).json({ ok: false, error: "Candidato no encontrado" });
+    }
+
+    const c = candRows[0];
+
+    // Stack
+    const [stack] = await conn.query(
+      `SELECT
+         cs.technology_id,
+         t.ct_name_tech AS technology_name,
+         cs.module_id,
+         m.module_catalogname AS module_name,
+         cs.submodule_id,
+         s.subm_catalog_name AS submodule_name
+       FROM candidate_stack cs
+       LEFT JOIN catalog_technology t ON t.technology_id = cs.technology_id
+       LEFT JOIN catalog_module m ON m.module_id = cs.module_id
+       LEFT JOIN catalog_submodule s ON s.submodule_id = cs.submodule_id
+       WHERE cs.candidate_id = ?
+       ORDER BY t.ct_name_tech, m.module_catalogname, s.subm_catalog_name`,
+      [c.candidate_id]
+    );
+
+    // Última compensation
+    const [comp] = await conn.query(
+      `SELECT cost_text, scheme, recorded_at
+       FROM candidate_compensation
+       WHERE candidate_id = ?
+       ORDER BY recorded_at DESC
+       LIMIT 1`,
+      [c.candidate_id]
+    );
+
+    // Última nota VISA y SKILLSET
+    const [visa] = await conn.query(
+      `SELECT note_text, recorded_at
+       FROM candidate_note
+       WHERE candidate_id = ? AND note_type = 'VISA'
+       ORDER BY recorded_at DESC
+       LIMIT 1`,
+      [c.candidate_id]
+    );
+
+    const [skill] = await conn.query(
+      `SELECT note_text, recorded_at
+       FROM candidate_note
+       WHERE candidate_id = ? AND note_type = 'SKILLSET'
+       ORDER BY recorded_at DESC
+       LIMIT 1`,
+      [c.candidate_id]
+    );
+
+    return res.json({
+      ok: true,
+      data: {
+        candidate: c,
+        stack,
+        lastCompensation: comp[0] || null,
+        lastVisa: visa[0] || null,
+        lastSkillset: skill[0] || null
+      }
+    });
+  } catch (e) {
+    console.error("getCandidateByCode:", e);
+    res.status(500).json({ ok: false, error: "Error obteniendo candidato" });
+  } finally {
+    conn.release();
+  }
+}

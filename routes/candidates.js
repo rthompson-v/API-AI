@@ -1,6 +1,6 @@
 import express from "express";
 import { profileView, candidatesSearch, profileViewByRole, addRecruiterManager, getLocations, getRoles, getTechnologies, getSubmodulesByModule
-, getModulesByTechnology
+, getModulesByTechnology, updateCandidateByCode, 
 } from "../controllers/candidatesController.js";
 
 const router = express.Router();
@@ -14,6 +14,7 @@ router.get("/catalogs/technologies/:technology_id/modules", getModulesByTechnolo
 router.get("/catalogs/modules/:module_id/submodules", getSubmodulesByModule);
 router.post("/profile-view-by-role", profileViewByRole);
 router.post("/add-recruiter-manager", addRecruiterManager);
-router.post("/search", candidatesSearch)
+router.post("/search", candidatesSearch);
+router.put("/update/:candidate_code", updateCandidateByCode);
 
 export default router;
