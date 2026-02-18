@@ -175,6 +175,7 @@ export async function profileViewByRole(req, res) {
         "linkedin",
       ],
       usuario: [
+        "candidate_code",
         "full_name",
         "years_experience",
         "skillset",
@@ -187,6 +188,7 @@ export async function profileViewByRole(req, res) {
         "cv",
       ],
       gerente: [
+        "candidate_code",
         "full_name",
         "years_experience",
         "skillset",
