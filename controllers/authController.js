@@ -1,28 +1,25 @@
-import pool from "../db.js";
-import bcrypt from "bcryptjs";
+
+import { pool2 } from "../db.js";
 
 export async function login(req, res) {
   try {
-    const { email, password } = req.body || {};
-    if (!email || !password) return res.status(400).json({ error: "Faltan credenciales" });
+    const { USER_CLP, PASS_CLP } = req.body || {};
+    if (!USER_CLP || !PASS_CLP) return res.status(400).json({ error: "Faltan credenciales" });
 
-    const [rows] = await pool.query(`SELECT * FROM users WHERE email = ? LIMIT 1`, [email]);
+    // Consulta la tabla de usuarios en la segunda BD
+    const [rows] = await pool2.query(
+      `SELECT * FROM usuarios WHERE USER_CLP = ? LIMIT 1`,
+      [USER_CLP]
+    );
     const user = rows[0];
     if (!user) return res.status(401).json({ error: "Credenciales inválidas" });
 
-    const hashed = user.password;
-    let ok = false;
-    if (hashed && typeof hashed === "string" && hashed.startsWith("$2")) {
-      ok = await bcrypt.compare(password, hashed);
-    } else {
-      // Fallback (si la DB tiene contraseñas en texto plano — no recomendado)
-      ok = password === hashed;
-    }
-
+    // Comparación de contraseña (texto plano, puedes adaptar a hash si lo implementas)
+    const ok = PASS_CLP === user.PASS_CLP;
     if (!ok) return res.status(401).json({ error: "Credenciales inválidas" });
 
-    // No generamos JWT aquí (puedes añadirlo fácilmente más adelante)
-    delete user.password;
+    // Elimina la contraseña antes de responder
+    delete user.PASS_CLP;
     res.json({ ok: true, user });
   } catch (err) {
     console.error("Error en /auth/login:", err);

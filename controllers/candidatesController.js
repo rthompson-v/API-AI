@@ -1,8 +1,8 @@
-import pool from "../db.js";
+import { pool1 } from "../db.js";
 
 export async function profileView(req, res) {
   try {
-    const [rows] = await pool.query(`
+    const [rows] = await pool1.query(`
       SELECT *
       FROM v_candidate_profile
     `);
@@ -47,7 +47,7 @@ export async function candidatesSearch(req, res) {
     ];
 
     if (!qRaw) {
-      const [rows] = await pool.query(
+      const [rows] = await pool1.query(
         `
         SELECT *
         FROM v_candidate_profile
@@ -134,7 +134,7 @@ export async function candidatesSearch(req, res) {
       LIMIT ? OFFSET ?
     `;
 
-    const [rows] = await pool.query(sql, params);
+    const [rows] = await pool1.query(sql, params);
 
     return res.json({
       ok: true,
@@ -154,7 +154,7 @@ export async function profileViewByRole(req, res) {
     const limit = Math.min(Number(req.query?.limit ?? req.body?.limit ?? 100), 1000);
     const offset = Math.max(Number(req.query?.offset ?? req.body?.offset ?? 0), 0);
 
-    const [rows] = await pool.query(
+    const [rows] = await pool1.query(
       `
       SELECT *
       FROM v_candidate_profile
@@ -273,7 +273,7 @@ export async function profileViewByRole(req, res) {
 //Insercion------------------------------------------------------------------------------------------------------------------------------
 // Función para agregar usuario Reclutador/Gerente
 export async function addRecruiterManager(req, res) {
-  const conn = await pool.getConnection();
+  const conn = await pool1.getConnection();
 
   try {
     const {
@@ -559,7 +559,7 @@ const getOrCreateSubmoduleId = async (moduleId, submoduleName) => {
 
 export async function getLocations(req, res) {
   try {
-    const [rows] = await pool.query(
+    const [rows] = await pool1.query(
       `SELECT location_id AS id, name
        FROM catalog_location
        ORDER BY name`
@@ -572,7 +572,7 @@ export async function getLocations(req, res) {
 
 export async function getRoles(req, res) {
   try {
-    const [rows] = await pool.query(
+    const [rows] = await pool1.query(
       `SELECT role_id AS id, name
        FROM catalog_role
        ORDER BY name`
@@ -585,7 +585,7 @@ export async function getRoles(req, res) {
 
 export async function getTechnologies(req, res) {
   try {
-    const [rows] = await pool.query(
+    const [rows] = await pool1.query(
       `SELECT technology_id AS id, ct_name_tech AS name
        FROM catalog_technology
        ORDER BY ct_name_tech`
@@ -599,7 +599,7 @@ export async function getTechnologies(req, res) {
 export async function getModulesByTechnology(req, res) {
   try {
     const { technology_id } = req.params;
-    const [rows] = await pool.query(
+    const [rows] = await pool1.query(
       `SELECT module_id AS id, module_catalogname AS name
        FROM catalog_module
        WHERE technology_id = ?
@@ -615,7 +615,7 @@ export async function getModulesByTechnology(req, res) {
 export async function getSubmodulesByModule(req, res) {
   try {
     const { module_id } = req.params;
-    const [rows] = await pool.query(
+    const [rows] = await pool1.query(
       `SELECT submodule_id AS id, subm_catalog_name AS name
        FROM catalog_submodule
        WHERE module_id = ?
@@ -629,7 +629,7 @@ export async function getSubmodulesByModule(req, res) {
 }
 
 export async function updateCandidateByCode(req, res) {
-  const conn = await pool.getConnection();
+  const conn = await pool1.getConnection();
 
   try {
     const { candidate_code } = req.params;
@@ -916,7 +916,7 @@ export async function listCandidates(req, res) {
       LIMIT 100
     `;
 
-    const [rows] = await pool.query(sql, [q, q, q, q]);
+    const [rows] = await pool1.query(sql, [q, q, q, q]);
     res.json({ ok: true, data: rows });
   } catch (e) {
     console.error("listCandidates:", e);
@@ -926,7 +926,7 @@ export async function listCandidates(req, res) {
 
 
 export async function getCandidateByCode(req, res) {
-  const conn = await pool.getConnection();
+  const conn = await pool1.getConnection();
   try {
     const { candidate_code } = req.params;
 
