@@ -1,9 +1,19 @@
 import express from "express";
+import { requireAuth, requireRoleIds } from "../middlewares/auth.js";
 import { profileView, candidatesSearch, profileViewByRole, addRecruiterManager, getLocations, getRoles, getTechnologies, getSubmodulesByModule
 , getModulesByTechnology, updateCandidateByCode, 
 } from "../controllers/candidatesController.js";
 
 const router = express.Router();
+
+
+//Funciones de Permisos
+
+router.get("/", requireAuth, getCandidates);
+router.post("/", requireAuth, requireRoleIds([1, 2]), createCandidate);
+
+//Funciones de Datos
+
 
 router.get("/profile-view", profileView);
 
