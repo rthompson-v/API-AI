@@ -23,9 +23,9 @@ export async function profileView(req, res) {
 
 export async function candidatesSearch(req, res) {
   try {
+    const tier = resolveTier(req.user);
     const qRaw = String(req.body?.q ?? "").trim();
     const limit = Math.min(Number(req.body?.limit ?? 50), 200);
-    const offset = Math.max(Number(req.body?.offset ?? 0), 0);
 
     const searchable = [
       "candidate_code",
@@ -46,21 +46,33 @@ export async function candidatesSearch(req, res) {
       "suggested_customer_employee_rate",
     ];
 
+    // Si no hay query: trae últimos
     if (!qRaw) {
       const [rows] = await pool1.query(
         `
         SELECT *
         FROM v_candidate_profile
         ORDER BY candidate_id DESC
-        LIMIT ? OFFSET ?
+        LIMIT ?
         `,
-        [limit, offset]
+        [limit]
       );
-      return res.json({ ok: true, count: rows.length, data: rows });
+
+      const keysToUse = fieldSpecs[tier] || fieldSpecs.normal;
+      const data = rows.map(r => {
+        const out = {};
+        if (Object.prototype.hasOwnProperty.call(r, "candidate_id")) out.candidate_id = r.candidate_id;
+        for (const k of keysToUse) {
+          const v = resolveField(r, k);
+          if (v !== null && v !== undefined) out[k] = v;
+        }
+        return out;
+      });
+
+      return res.json({ ok: true, tier, q: "", count: data.length, data });
     }
 
     const tokens = qRaw.split(/\s+/).filter(Boolean);
-
     const fieldFilters = [];
     const freeTokens = [];
 
@@ -69,11 +81,7 @@ export async function candidatesSearch(req, res) {
       if (m) {
         const field = m[1];
         const value = m[2];
-        const aliasMap = {
-          name: "full_name",
-          english: "english_score",
-          exp: "years_experience",
-        };
+        const aliasMap = { name: "full_name", english: "english_score", exp: "years_experience" };
         const col = aliasMap[field] || field;
         if (searchable.includes(col)) {
           fieldFilters.push({ col, value });
@@ -87,8 +95,7 @@ export async function candidatesSearch(req, res) {
     const params = [];
 
     for (const ff of fieldFilters) {
-      whereParts.push(`(${ff.col} LIKE ?)`);
-      params.push(`%${ff.value}%`);
+      whereParts.push(`(${ff.col} LIKE ?)`); params.push(`%${ff.value}%`);
     }
 
     for (const token of freeTokens) {
@@ -99,10 +106,10 @@ export async function candidatesSearch(req, res) {
     }
 
     if (whereParts.length === 0) {
-      whereParts.push(`(full_name LIKE ?)`);
-      params.push(`%${qRaw}%`);
+      whereParts.push(`(full_name LIKE ?)`); params.push(`%${qRaw}%`);
     }
 
+    // Ordenación
     const numericMatch = qRaw.match(/-?\d+(\.\d+)?/);
     const n = numericMatch ? Number(numericMatch[0]) : null;
 
@@ -124,165 +131,170 @@ export async function candidatesSearch(req, res) {
       params.push(freeTokens[0] ?? qRaw);
     }
 
-    params.push(limit, offset);
+    params.push(limit);
 
     const sql = `
       SELECT *
       FROM v_candidate_profile
       WHERE ${whereParts.join(" AND ")}
       ${orderSql}
-      LIMIT ? OFFSET ?
+      LIMIT ?
     `;
 
     const [rows] = await pool1.query(sql, params);
 
-    return res.json({
-      ok: true,
-      q: qRaw,
-      count: rows.length,
-      data: rows,
+    // ✅ recorte por rol
+    const keysToUse = fieldSpecs[tier] || fieldSpecs.normal;
+    const data = rows.map(r => {
+      const out = {};
+      if (Object.prototype.hasOwnProperty.call(r, "candidate_id")) out.candidate_id = r.candidate_id;
+      for (const k of keysToUse) {
+        const v = resolveField(r, k);
+        if (v !== null && v !== undefined) out[k] = v;
+      }
+      return out;
     });
+
+    return res.json({ ok: true, tier, q: qRaw, count: data.length, data });
   } catch (err) {
     console.error("Error en POST /candidates/search:", err);
     return res.status(500).json({ ok: false, error: "Error buscando candidatos" });
   }
 }
 
+function resolveTier(reqUser) {
+  const roleName = String(reqUser?.RoleName ?? "").toLowerCase();
+  const roleId = Number(reqUser?.Role_CLP);
+
+  // Ajusta estos IDs a los reales de tu tabla ROLE_USER
+  // Ejemplo: 1=Administrador, 2=Gerente, 3=Usuario, etc.
+  const byId = {
+    1: "usuario",
+    2: "gerente",
+    3: "administrador",
+  };
+
+  if (Number.isFinite(roleId) && byId[roleId]) return byId[roleId];
+
+  // fallback por nombre
+  if (roleName.includes("admin")) return "administrador";
+  if (roleName.includes("gerente")) return "gerente";
+  if (roleName.includes("usuario")) return "usuario";
+
+  return "normal";
+}
+
+const fieldSpecs = {
+  normal: [
+    "full_name",
+    "years_experience",
+    "skillset",
+    "last_update",
+    "location",
+    "english_score",
+    "linkedin",
+  ],
+  usuario: [
+    "candidate_code",
+    "full_name",
+    "years_experience",
+    "skillset",
+    "last_update",
+    "location",
+    "english_score",
+    "linkedin",
+    "phone",
+    "email",
+    "cv",
+  ],
+  gerente: [
+    "candidate_code",
+    "full_name",
+    "years_experience",
+    "skillset",
+    "last_update",
+    "location",
+    "english_score",
+    "linkedin",
+    "phone",
+    "email",
+    "cv",
+    "tarifa",
+    "costo_expectativa",
+  ],
+  administrador: [
+    "candidate_code",
+    "full_name",
+    "years_experience",
+    "skillset",
+    "last_update",
+    "location",
+    "english_score",
+    "linkedin",
+    "phone",
+    "email",
+    "cv",
+    "tarifa",
+    "costo_expectativa",
+  ],
+};
+
+const aliases = {
+  full_name: ["full_name", "name", "candidate_name"],
+  years_experience: ["years_experience", "experiencia", "experience", "yrs_experience"],
+  skillset: ["skillset", "skills", "skill_set"],
+  last_update: ["last_update", "updated_at", "lastupdate", "historial", "history"],
+  location: ["location", "place", "city"],
+  english_score: ["english_score", "english_level", "english"],
+  linkedin: ["linkedin", "linkedin_url"],
+  phone: ["phone", "telefono", "phone_number"],
+  email: ["email", "email_address"],
+  cv: ["cv", "cv_url", "resume", "resume_url"],
+  tarifa: ["tarifa", "rate", "suggested_customer_contractor_rate", "suggested_rate"],
+  costo_expectativa: ["costo_expectativa", "cost_expectation", "expected_cost", "cost_text"],
+};
+
+function resolveField(row, key) {
+  const names = aliases[key] || [key];
+  for (const n of names) {
+    if (Object.prototype.hasOwnProperty.call(row, n) && row[n] !== undefined) return row[n];
+  }
+  return null;
+}
+
 export async function profileViewByRole(req, res) {
   try {
-    const role = String(req.query?.role ?? req.body?.role ?? "normal").toLowerCase();
-    const limit = Math.min(Number(req.query?.limit ?? req.body?.limit ?? 100), 1000);
-    const offset = Math.max(Number(req.query?.offset ?? req.body?.offset ?? 0), 0);
+    const tier = resolveTier(req.user);
+    const limit = Math.min(Number(req.body?.limit ?? req.query?.limit ?? 100), 1000);
 
     const [rows] = await pool1.query(
       `
       SELECT *
       FROM v_candidate_profile
       ORDER BY candidate_id DESC
-      LIMIT ? OFFSET ?
-    `,
-      [limit, offset]
+      LIMIT ?
+      `,
+      [limit]
     );
 
-    const fieldSpecs = {
-      normal: [
-        "full_name",
-        "years_experience",
-        "skillset",
-        "last_update",
-        "location",
-        "english_score",
-        "linkedin",
-      ],
-      usuario: [
-        "candidate_code",
-        "full_name",
-        "years_experience",
-        "skillset",
-        "last_update",
-        "location",
-        "english_score",
-        "linkedin",
-        "phone",
-        "email",
-        "cv",
-      ],
-      gerente: [
-        "candidate_code",
-        "full_name",
-        "years_experience",
-        "skillset",
-        "last_update",
-        "location",
-        "english_score",
-        "linkedin",
-        "phone",
-        "email",
-        "cv",
-        "tarifa",
-        "costo_expectativa",
-      ],
-      Administrador: [
-        "candidate_code",
-        "full_name",
-        "years_experience",
-        "skillset",
-        "last_update",
-        "location",
-        "english_score",
-        "linkedin",
-        "phone",
-        "email",
-        "cv",
-        "tarifa",
-        "costo_expectativa",
-      ],
-    };
-
-    const aliases = {
-      full_name: ["full_name", "name", "candidate_name"],
-      years_experience: [
-        "years_experience",
-        "experiencia",
-        "experience",
-        "yrs_experience",
-      ],
-      skillset: ["skillset", "skills", "skill_set"],
-      last_update: [
-        "last_update",
-        "updated_at",
-        "lastupdate",
-        "historial",
-        "history",
-      ],
-      location: ["location", "place", "city"],
-      english_score: ["english_score", "english_level", "english"],
-      linkedin: ["linkedin", "linkedin_url"],
-      phone: ["phone", "telefono", "phone_number"],
-      email: ["email", "email_address"],
-      cv: ["cv", "cv_url", "resume", "resume_url"],
-      tarifa: [
-        "tarifa",
-        "rate",
-        "suggested_customer_contractor_rate",
-        "suggested_rate",
-      ],
-      costo_expectativa: [
-        "costo_expectativa",
-        "cost_expectation",
-        "expected_cost",
-        "cost_text",
-      ],
-    };
-
-    function resolveField(row, key) {
-      const names = aliases[key] || [key];
-      for (const n of names) {
-        if (Object.prototype.hasOwnProperty.call(row, n) && row[n] !== undefined) {
-          return row[n];
-        }
-      }
-      return null;
-    }
-
-    const keysToUse = fieldSpecs[role] || fieldSpecs.normal;
+    const keysToUse = fieldSpecs[tier] || fieldSpecs.normal;
 
     const data = rows.map((r) => {
       const out = {};
+      // siempre incluye candidate_id si existe
+      if (Object.prototype.hasOwnProperty.call(r, "candidate_id")) out.candidate_id = r.candidate_id;
+
       for (const k of keysToUse) {
         const v = resolveField(r, k);
         if (v !== null && v !== undefined) out[k] = v;
       }
-      if (Object.prototype.hasOwnProperty.call(r, "candidate_id")) {
-        out.candidate_id = r.candidate_id;
-      }
       return out;
     });
 
-    return res.status(200).json({ ok: true, role, count: data.length, data });
+    return res.status(200).json({ ok: true, tier, count: data.length, data });
   } catch (err) {
     console.error("Error en /candidates/profile-view-by-role:", err);
-    return res.status(500).json({ ok: false, error: "Error consultando la vista v_candidate_profile" });
+    return res.status(500).json({ ok: false, error: "Error consultando v_candidate_profile" });
   }
 }
 //Insercion------------------------------------------------------------------------------------------------------------------------------
