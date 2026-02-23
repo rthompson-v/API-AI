@@ -36,7 +36,7 @@ export async function login(req, res) {
       return res.status(401).json({ ok: false, error: "Credenciales inválidas" });
     }
 
-    // ✅ bcrypt: PASS_CLP en DB debe ser hash bcrypt
+    //bcrypt: PASS_CLP en DB debe ser hash bcrypt
     const passOk = await bcrypt.compare(PASS_CLP, user.PASS_CLP);
     if (!passOk) {
       return res.status(401).json({ ok: false, error: "Credenciales inválidas" });

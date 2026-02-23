@@ -202,6 +202,21 @@ export async function profileViewByRole(req, res) {
         "tarifa",
         "costo_expectativa",
       ],
+      Administrador: [
+        "candidate_code",
+        "full_name",
+        "years_experience",
+        "skillset",
+        "last_update",
+        "location",
+        "english_score",
+        "linkedin",
+        "phone",
+        "email",
+        "cv",
+        "tarifa",
+        "costo_expectativa",
+      ],
     };
 
     const aliases = {
