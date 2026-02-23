@@ -22,9 +22,9 @@ router.get("/catalogs/roles", requireAuth, getRoles);
 router.get("/catalogs/technologies", requireAuth, getTechnologies);
 router.get("/catalogs/technologies/:technology_id/modules", requireAuth, getModulesByTechnology);
 router.get("/catalogs/modules/:module_id/submodules", requireAuth, getSubmodulesByModule);
-router.post("/profile-view-by-role", requireAuth, requireRoleIds([1, 2]), profileViewByRole);
-router.post("/add-recruiter-manager", requireAuth, requireRoleIds([1, 2]), addRecruiterManager);
-router.put("/update/:candidate_code", requireAuth, requireRoleIds([1, 2]),   updateCandidateByCode);
+router.post("/profile-view-by-role", requireAuth, requireRoleIds([1, 2, 3]), profileViewByRole);
+router.post("/add-recruiter-manager", requireAuth, requireRoleIds([1, 2, 3]), addRecruiterManager);
+router.put("/update/:candidate_code", requireAuth, requireRoleIds([1, 2, 3]),   updateCandidateByCode);
 
 
 
