@@ -27,7 +27,7 @@ router.get("/catalogs/technologies",                      requireAuth, getTechno
 router.get("/catalogs/technologies/:technology_id/modules", requireAuth, getModulesByTechnology);
 router.get("/catalogs/modules/:module_id/submodules",     requireAuth, getSubmodulesByModule);
 router.post("/profile-view-by-role",  requireAuth, requireRoleIds([1, 2, 3]), profileViewByRole);
-router.post("/add-recruiter-manager", requireAuth, requireRoleIds([1, 2, 3]), addRecruiterManager);
+router.post("/", requireAuth, requireRoleIds([1, 2, 3]), addRecruiterManager);
 router.put("/update/:candidate_code", requireAuth, requireRoleIds([1, 2, 3]), updateCandidateByCode);
 router.get("/:candidate_code",        requireAuth, requireRoleIds([1, 2, 3]), getCandidateByCode); // ← agregado
 
