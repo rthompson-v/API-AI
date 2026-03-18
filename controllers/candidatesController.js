@@ -262,28 +262,35 @@ function resolveField(row, key) {
   return null;
 }
 
+
+
 export async function profileViewByRole(req, res) {
   try {
-    const tier = resolveTier(req.user);
-    const limit = Math.min(Number(req.body?.limit ?? req.query?.limit ?? 100), 1000);
+    const tier  = resolveTier(req.user);
+    const limit = Math.min(Number(req.body?.limit ?? req.query?.limit ?? 20), 100);
+    const page  = Math.max(Number(req.body?.page  ?? req.query?.page  ?? 1), 1);
+    const offset = (page - 1) * limit;
+
+    // Total de registros (para calcular páginas)
+    const [[{ total }]] = await pool1.query(
+      `SELECT COUNT(*) AS total FROM v_candidate_profile`
+    );
 
     const [rows] = await pool1.query(
       `
       SELECT *
       FROM v_candidate_profile
       ORDER BY candidate_id DESC
-      LIMIT ?
+      LIMIT ? OFFSET ?
       `,
-      [limit]
+      [limit, offset]
     );
 
     const keysToUse = fieldSpecs[tier] || fieldSpecs.normal;
 
     const data = rows.map((r) => {
       const out = {};
-      // siempre incluye candidate_id si existe
       if (Object.prototype.hasOwnProperty.call(r, "candidate_id")) out.candidate_id = r.candidate_id;
-
       for (const k of keysToUse) {
         const v = resolveField(r, k);
         if (v !== null && v !== undefined) out[k] = v;
@@ -291,7 +298,16 @@ export async function profileViewByRole(req, res) {
       return out;
     });
 
-    return res.status(200).json({ ok: true, tier, count: data.length, data });
+    return res.status(200).json({
+      ok: true,
+      tier,
+      page,
+      limit,
+      total,
+      totalPages: Math.ceil(total / limit),
+      count: data.length,
+      data,
+    });
   } catch (err) {
     console.error("Error en /candidates/profile-view-by-role:", err);
     return res.status(500).json({ ok: false, error: "Error consultando v_candidate_profile" });
