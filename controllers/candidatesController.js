@@ -186,6 +186,7 @@ function resolveTier(reqUser) {
 
 const fieldSpecs = {
   normal: [
+    "candidate_code",
     "full_name",
     "years_experience",
     "skillset",
@@ -334,7 +335,8 @@ export async function addRecruiterManager(req, res) {
       Rol,          // puede ser ID o nombre
       Tecnologia,   // puede ser ID o nombre (o array si quieres varias)
       Modulos,      // opcional: { module, submodule } o array de esos
-      Visa          // no existe columna -> candidate_note
+      Visa,         // no existe columna -> candidate_note
+      HiringPreference  // id o nombre -> candidate.hiring_preference_id
     } = req.body;
 
     // Validación mínima
@@ -388,6 +390,13 @@ export async function addRecruiterManager(req, res) {
       });
     }
 
+    const hiringPreferenceId = await resolveId({
+      table: "catalog_hiring_preference",
+      idCol: "hiring_preference_id",
+      nameCol: "name",
+      value: HiringPreference
+    });
+
     // Tecnología: permitimos 1 o varias
     const techValues = toArray(Tecnologia);
     const techIds = [];
@@ -431,8 +440,8 @@ export async function addRecruiterManager(req, res) {
     const [candRes] = await conn.query(
       `INSERT INTO candidate (
         candidate_code, full_name, phone, email, cv_url,
-        location_id, role_id, english_score, years_experience
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        location_id, role_id, english_score, years_experience, hiring_preference_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         candidateCode,
         Name,
@@ -442,18 +451,18 @@ export async function addRecruiterManager(req, res) {
         locationId,
         roleId,
         EnglishLevel ?? null,
-        Experiencia ?? null
+        Experiencia ?? null,
+        hiringPreferenceId || null
       ]
     );
 
     const candidateId = candRes.insertId;
 
-    // 2) INSERT compensation (Expectativas + Esquema)
-    if (Expectativas || Esquema) {
+    // 2) INSERT compensation (solo Expectativas)
+    if (Expectativas) {
       await conn.query(
-        `INSERT INTO candidate_compensation (candidate_id, cost_text, scheme)
-         VALUES (?, ?, ?)`,
-        [candidateId, Expectativas || null, Esquema || null]
+        `INSERT INTO candidate_compensation (candidate_id, cost_text) VALUES (?, ?)`,
+        [candidateId, Expectativas || null]
       );
     }
 
@@ -671,6 +680,19 @@ export async function getSubmodulesByModule(req, res) {
   }
 }
 
+export async function getHiringPreferences(req, res) {
+  try {
+    const [rows] = await pool1.query(
+      `SELECT hiring_preference_id AS id, name
+       FROM catalog_hiring_preference
+       ORDER BY hiring_preference_id`
+    );
+    res.json({ ok: true, data: rows });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: "Error obteniendo hiring preferences" });
+  }
+}
+
 export async function updateCandidateByCode(req, res) {
   const conn = await pool1.getConnection();
 
@@ -697,7 +719,8 @@ export async function updateCandidateByCode(req, res) {
       // stack
       Tecnologia,     // id/nombre o array
       Modulos,        // {technology,module,submodule} o array
-      replaceStack    // boolean
+      replaceStack,   // boolean
+      HiringPreference  // id o nombre -> candidate.hiring_preference_id
     } = req.body;
 
     if (!candidate_code) {
@@ -796,7 +819,6 @@ export async function updateCandidateByCode(req, res) {
     }
 
     if (Rol !== undefined) {
-      // ajusta nameCol si tu role no usa "name"
       const roleId = await resolveId({
         table: "catalog_role",
         idCol: "role_id",
@@ -813,6 +835,17 @@ export async function updateCandidateByCode(req, res) {
       vals.push(roleId);
     }
 
+    if (HiringPreference !== undefined) {
+      const hpId = await resolveId({
+        table: "catalog_hiring_preference",
+        idCol: "hiring_preference_id",
+        nameCol: "name",
+        value: HiringPreference
+      });
+      set.push("hiring_preference_id = ?");
+      vals.push(hpId || null);
+    }
+
     if (set.length) {
       vals.push(candidateId);
       await conn.query(
@@ -821,12 +854,11 @@ export async function updateCandidateByCode(req, res) {
       );
     }
 
-    // 3) compensation histórico
-    if (Expectativas !== undefined || Esquema !== undefined) {
+    // 3) compensation histórico (solo Expectativas)
+    if (Expectativas !== undefined) {
       await conn.query(
-        `INSERT INTO candidate_compensation (candidate_id, cost_text, scheme)
-         VALUES (?, ?, ?)`,
-        [candidateId, Expectativas || null, Esquema || null]
+        `INSERT INTO candidate_compensation (candidate_id, cost_text) VALUES (?, ?)`,
+        [candidateId, Expectativas || null]
       );
     }
 
