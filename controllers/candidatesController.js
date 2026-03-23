@@ -27,7 +27,8 @@ export async function candidatesSearch(req, res) {
     const qRaw = String(req.body?.q ?? "").trim();
     const limit = Math.min(Number(req.body?.limit ?? 50), 200);
 
-    const searchable = [
+    //Campos de texto buscables con LIKE
+    const textSearchable = [
       "candidate_code",
       "full_name",
       "email",
@@ -38,90 +39,130 @@ export async function candidatesSearch(req, res) {
       "seniority",
       "availability_notes",
       "cost_text",
-      "available_from",
-      "available_to",
-      "years_experience",
+      "hiring_preference",
+      "technologies",  
+      "skills",        
+    ];
+
+    //Campos numéricos — usan = o BETWEEN, nunca LIKE
+    const numericFields = [
       "english_score",
+      "years_experience",
       "suggested_customer_contractor_rate",
       "suggested_customer_employee_rate",
     ];
 
-    // Si no hay query: trae últimos
+    //Campos de fecha
+    const dateFields = ["available_from", "available_to"];
+
+    const allSearchable = [...textSearchable, ...numericFields, ...dateFields];
+
+    // ─── Sin query: trae últimos ────────────────────────────────────────────
     if (!qRaw) {
       const [rows] = await pool1.query(
-        `
-        SELECT *
-        FROM v_candidate_profile
-        ORDER BY candidate_id DESC
-        LIMIT ?
-        `,
+        `SELECT * FROM v_candidate_profile ORDER BY candidate_id DESC LIMIT ?`,
         [limit]
       );
-
-      const keysToUse = fieldSpecs[tier] || fieldSpecs.normal;
-      const data = rows.map(r => {
-        const out = {};
-        if (Object.prototype.hasOwnProperty.call(r, "candidate_id")) out.candidate_id = r.candidate_id;
-        for (const k of keysToUse) {
-          const v = resolveField(r, k);
-          if (v !== null && v !== undefined) out[k] = v;
-        }
-        return out;
-      });
-
-      return res.json({ ok: true, tier, q: "", count: data.length, data });
+      return res.json({ ok: true, tier, q: "", count: rows.length, data: applyTier(rows, tier) });
     }
 
+    // ─── Tokenización ───────────────────────────────────────────────────────
     const tokens = qRaw.split(/\s+/).filter(Boolean);
     const fieldFilters = [];
     const freeTokens = [];
 
+    const aliasMap = {
+      name:     "full_name",
+      english:  "english_score",
+      exp:      "years_experience",
+      rate:     "suggested_customer_contractor_rate",
+      location: "location",
+      role:     "role",
+      tech:     "technologies",
+      pref:     "hiring_preference",
+    };
+
     for (const t of tokens) {
+      // Soporte field:value  Y  field:min-max (rangos)
       const m = t.match(/^([a-zA-Z_]+):(.+)$/);
       if (m) {
-        const field = m[1];
-        const value = m[2];
-        const aliasMap = { name: "full_name", english: "english_score", exp: "years_experience" };
-        const col = aliasMap[field] || field;
-        if (searchable.includes(col)) {
-          fieldFilters.push({ col, value });
+        const col = aliasMap[m[1]] || m[1];
+        if (allSearchable.includes(col)) {
+          // Rango numérico  ej: exp:3-5
+          const range = m[2].match(/^(\d+\.?\d*)-(\d+\.?\d*)$/);
+          if (range && numericFields.includes(col)) {
+            fieldFilters.push({ col, type: "range", min: Number(range[1]), max: Number(range[2]) });
+          } else if (numericFields.includes(col) && !isNaN(Number(m[2]))) {
+            fieldFilters.push({ col, type: "numeric", value: Number(m[2]) });
+          } else {
+            fieldFilters.push({ col, type: "like", value: m[2] });
+          }
           continue;
         }
       }
       freeTokens.push(t);
     }
 
+    // ─── Construcción WHERE ─────────────────────────────────────────────────
     const whereParts = [];
     const params = [];
 
+    // Filtros field:value
     for (const ff of fieldFilters) {
-      whereParts.push(`(${ff.col} LIKE ?)`); params.push(`%${ff.value}%`);
+      if (ff.type === "range") {
+        whereParts.push(`(${ff.col} BETWEEN ? AND ?)`);
+        params.push(ff.min, ff.max);
+      } else if (ff.type === "numeric") {
+        whereParts.push(`(${ff.col} = ?)`);
+        params.push(ff.value);
+      } else {
+        whereParts.push(`(${ff.col} LIKE ?)`);
+        params.push(`%${ff.value}%`);
+      }
     }
 
+    // Free tokens — texto busca en textSearchable, números buscan en numericFields
     for (const token of freeTokens) {
-      const like = `%${token}%`;
-      const orParts = searchable.map((col) => `(${col} LIKE ?)`);
-      whereParts.push(`(${orParts.join(" OR ")})`);
-      params.push(...searchable.map(() => like));
+      const isNum = !isNaN(Number(token)) && token !== "";
+      const orParts = [];
+
+      if (isNum) {
+        //Numérico: busca coincidencia exacta en campos numéricos
+        for (const col of numericFields) {
+          orParts.push(`(${col} = ?)`);
+          params.push(Number(token));
+        }
+      }
+
+      // Siempre busca en campos de texto también
+      for (const col of textSearchable) {
+        orParts.push(`(${col} LIKE ?)`);
+        params.push(`%${token}%`);
+      }
+
+      if (orParts.length) {
+        whereParts.push(`(${orParts.join(" OR ")})`);
+      }
     }
 
     if (whereParts.length === 0) {
-      whereParts.push(`(full_name LIKE ?)`); params.push(`%${qRaw}%`);
+      whereParts.push(`(full_name LIKE ?)`);
+      params.push(`%${qRaw}%`);
     }
 
-    // Ordenación
-    const numericMatch = qRaw.match(/-?\d+(\.\d+)?/);
-    const n = numericMatch ? Number(numericMatch[0]) : null;
-
+    // ─── Ordenación ─────────────────────────────────────────────────────────
+    const firstNum = freeTokens.find(t => !isNaN(Number(t)) && t !== "");
     let orderSql = "";
-    if (n !== null && Number.isFinite(n)) {
+
+    if (firstNum !== undefined) {
+      // Si buscó un número, ordena por proximidad al valor numérico
       orderSql = `
         ORDER BY
           ABS(IFNULL(english_score, 999999) - ?) ASC,
-          IFNULL(english_score, -1) DESC,
+          ABS(IFNULL(years_experience, 999999) - ?) ASC,
           full_name ASC
       `;
-      params.push(n);
+      params.push(Number(firstNum), Number(firstNum));
     } else {
       orderSql = `
         ORDER BY
@@ -142,24 +183,51 @@ export async function candidatesSearch(req, res) {
     `;
 
     const [rows] = await pool1.query(sql, params);
+    return res.json({ ok: true, tier, q: qRaw, count: rows.length, data: applyTier(rows, tier) });
 
-    // ✅ recorte por rol
-    const keysToUse = fieldSpecs[tier] || fieldSpecs.normal;
-    const data = rows.map(r => {
-      const out = {};
-      if (Object.prototype.hasOwnProperty.call(r, "candidate_id")) out.candidate_id = r.candidate_id;
-      for (const k of keysToUse) {
-        const v = resolveField(r, k);
-        if (v !== null && v !== undefined) out[k] = v;
-      }
-      return out;
-    });
-
-    return res.json({ ok: true, tier, q: qRaw, count: data.length, data });
   } catch (err) {
     console.error("Error en POST /candidates/search:", err);
     return res.status(500).json({ ok: false, error: "Error buscando candidatos" });
   }
+}
+
+// ─── Helper: aplica fieldSpecs del tier Y garantiza campos nuevos ──────────
+function applyTier(rows, tier) {
+  const keysToUse = fieldSpecs[tier] || fieldSpecs.normal;
+
+  
+  const alwaysInclude = [
+    "candidate_id",
+    "hiring_preference",
+    "hiring_preference_id",
+    "technologies",
+    "skills",
+  ];
+
+  return rows.map(r => {
+    const out = {};
+
+    // Siempre incluir candidate_id
+    if (Object.prototype.hasOwnProperty.call(r, "candidate_id")) {
+      out.candidate_id = r.candidate_id;
+    }
+
+    // Campos del tier
+    for (const k of keysToUse) {
+      const v = resolveField(r, k);
+      if (v !== null && v !== undefined) out[k] = v;
+    }
+
+    
+    for (const k of alwaysInclude) {
+      if (!(k in out) && Object.prototype.hasOwnProperty.call(r, k)) {
+        const v = r[k];
+        if (v !== null && v !== undefined) out[k] = v;
+      }
+    }
+
+    return out;
+  });
 }
 
 function resolveTier(reqUser) {
