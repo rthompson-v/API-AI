@@ -2,7 +2,7 @@ import { pool2 } from "../db.js";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 
-const JWT_SECRET = process.env.JWT_SECRET;
+const JWT_SECRET = process.env.JWT_SECRET || "29d2ad5a9f5b799a430818f9f4d466855d9bf374e8ced2148241a39dffc66b40";
 
 export async function login(req, res) {
   try {
@@ -16,27 +16,29 @@ export async function login(req, res) {
       return res.status(500).json({ ok: false, error: "JWT_SECRET no configurado" });
     }
 
-    const [rows] = await pool2.query(
+    // En Postgres usamos $1 como placeholder y el resultado viene en .rows
+    const result = await pool2.query(
       `
       SELECT 
-        u.USER_CLP,
-        u.ROLE_CLP AS Role_CLP,
-        ru.ROLE_NAME AS RoleName,
-        u.PASS_CLP
-      FROM Usuario u
-      LEFT JOIN ROLE_USER ru ON ru.ID_ROLE = u.ROLE_CLP
-      WHERE u.USER_CLP = ?
+        u."USER_CLP",
+        u."ROLE_CLP" AS "Role_CLP",
+        ru."ROLE_NAME" AS "RoleName",
+        u."PASS_CLP"
+      FROM "Usuario" u
+      LEFT JOIN "ROLE_USER" ru ON ru."ID_ROLE" = u."ROLE_CLP"
+      WHERE u."USER_CLP" = $1
       LIMIT 1
       `,
       [USER_CLP]
     );
 
-    const user = rows[0];
+    const user = result.rows[0]; // Accedemos a la primera fila
+
     if (!user) {
       return res.status(401).json({ ok: false, error: "Credenciales inválidas" });
     }
 
-    //bcrypt: PASS_CLP en DB debe ser hash bcrypt
+    // bcrypt: PASS_CLP en DB debe ser hash bcrypt
     const passOk = await bcrypt.compare(PASS_CLP, user.PASS_CLP);
     if (!passOk) {
       return res.status(401).json({ ok: false, error: "Credenciales inválidas" });

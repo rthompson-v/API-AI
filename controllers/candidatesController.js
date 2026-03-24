@@ -2,15 +2,11 @@ import { pool1 } from "../db.js";
 
 export async function profileView(req, res) {
   try {
-    const [rows] = await pool1.query(`
-      SELECT *
-      FROM v_candidate_profile
-    `);
-
+    const result = await pool1.query(`SELECT * FROM v_candidate_profile`); // Sin [rows]
     res.status(200).json({
       ok: true,
-      count: rows.length,
-      data: rows,
+      count: result.rows.length,
+      data: result.rows, // Los datos están en result.rows
     });
   } catch (err) {
     console.error("Error en /candidates/profile-view:", err);
@@ -59,11 +55,12 @@ export async function candidatesSearch(req, res) {
 
     // ─── Sin query: trae últimos ────────────────────────────────────────────
     if (!qRaw) {
-      const [rows] = await pool1.query(
-        `SELECT * FROM v_candidate_profile ORDER BY candidate_id DESC LIMIT ?`,
+      // En Postgres, limit va directo, pero para ser consistentes usamos $1
+      const result = await pool1.query(
+        `SELECT * FROM v_candidate_profile ORDER BY candidate_id DESC LIMIT $1`,
         [limit]
       );
-      return res.json({ ok: true, tier, q: "", count: rows.length, data: applyTier(rows, tier) });
+      return res.json({ ok: true, tier, q: "", count: result.rows.length, data: applyTier(result.rows, tier) });
     }
 
     // ─── Tokenización ───────────────────────────────────────────────────────
@@ -106,17 +103,19 @@ export async function candidatesSearch(req, res) {
     // ─── Construcción WHERE ─────────────────────────────────────────────────
     const whereParts = [];
     const params = [];
+    let pIdx = 1; // IMPORTANTE: Contador para $1, $2, etc.
 
     // Filtros field:value
     for (const ff of fieldFilters) {
       if (ff.type === "range") {
-        whereParts.push(`(${ff.col} BETWEEN ? AND ?)`);
+        whereParts.push(`("${ff.col}" BETWEEN $${pIdx++} AND $${pIdx++})`);
         params.push(ff.min, ff.max);
       } else if (ff.type === "numeric") {
-        whereParts.push(`(${ff.col} = ?)`);
+        whereParts.push(`("${ff.col}" = $${pIdx++})`);
         params.push(ff.value);
       } else {
-        whereParts.push(`(${ff.col} LIKE ?)`);
+        // Usamos ILIKE para que no importe mayúsculas/minúsculas en Postgres
+        whereParts.push(`("${ff.col}" ILIKE $${pIdx++})`);
         params.push(`%${ff.value}%`);
       }
     }
@@ -127,16 +126,15 @@ export async function candidatesSearch(req, res) {
       const orParts = [];
 
       if (isNum) {
-        //Numérico: busca coincidencia exacta en campos numéricos
         for (const col of numericFields) {
-          orParts.push(`(${col} = ?)`);
+          orParts.push(`("${col}" = $${pIdx++})`);
           params.push(Number(token));
         }
       }
 
       // Siempre busca en campos de texto también
       for (const col of textSearchable) {
-        orParts.push(`(${col} LIKE ?)`);
+        orParts.push(`("${col}" ILIKE $${pIdx++})`);
         params.push(`%${token}%`);
       }
 
@@ -146,7 +144,7 @@ export async function candidatesSearch(req, res) {
     }
 
     if (whereParts.length === 0) {
-      whereParts.push(`(full_name LIKE ?)`);
+      whereParts.push(`("full_name" ILIKE $${pIdx++})`);
       params.push(`%${qRaw}%`);
     }
 
@@ -155,35 +153,35 @@ export async function candidatesSearch(req, res) {
     let orderSql = "";
 
     if (firstNum !== undefined) {
-      // Si buscó un número, ordena por proximidad al valor numérico
+      // Postgres usa COALESCE en lugar de IFNULL
       orderSql = `
         ORDER BY
-          ABS(IFNULL(english_score, 999999) - ?) ASC,
-          ABS(IFNULL(years_experience, 999999) - ?) ASC,
-          full_name ASC
+          ABS(COALESCE("english_score", 999999) - $${pIdx++}) ASC,
+          ABS(COALESCE("years_experience", 999999) - $${pIdx++}) ASC,
+          "full_name" ASC
       `;
       params.push(Number(firstNum), Number(firstNum));
     } else {
+      const firstToken = freeTokens[0] ?? qRaw;
       orderSql = `
         ORDER BY
-          (full_name LIKE CONCAT(?, '%')) DESC,
-          full_name ASC
+          ("full_name" ILIKE $${pIdx++} || '%') DESC,
+          "full_name" ASC
       `;
-      params.push(freeTokens[0] ?? qRaw);
+      params.push(firstToken);
     }
 
     params.push(limit);
-
     const sql = `
       SELECT *
       FROM v_candidate_profile
       WHERE ${whereParts.join(" AND ")}
       ${orderSql}
-      LIMIT ?
+      LIMIT $${pIdx++} 
     `;
 
-    const [rows] = await pool1.query(sql, params);
-    return res.json({ ok: true, tier, q: qRaw, count: rows.length, data: applyTier(rows, tier) });
+    const result = await pool1.query(sql, params);
+    return res.json({ ok: true, tier, q: qRaw, count: result.rows.length, data: applyTier(result.rows, tier) });
 
   } catch (err) {
     console.error("Error en POST /candidates/search:", err);
@@ -335,29 +333,22 @@ function resolveField(row, key) {
 
 export async function profileViewByRole(req, res) {
   try {
-    const tier  = resolveTier(req.user);
+    const tier = resolveTier(req.user);
     const limit = Math.min(Number(req.body?.limit ?? req.query?.limit ?? 20), 100);
-    const page  = Math.max(Number(req.body?.page  ?? req.query?.page  ?? 1), 1);
+    const page = Math.max(Number(req.body?.page ?? req.query?.page ?? 1), 1);
     const offset = (page - 1) * limit;
 
-    // Total de registros (para calcular páginas)
-    const [[{ total }]] = await pool1.query(
-      `SELECT COUNT(*) AS total FROM v_candidate_profile`
-    );
+    // En Postgres el conteo se extrae de .rows[0]
+    const countRes = await pool1.query(`SELECT COUNT(*) AS total FROM v_candidate_profile`);
+    const total = parseInt(countRes.rows[0].total);
 
-    const [rows] = await pool1.query(
-      `
-      SELECT *
-      FROM v_candidate_profile
-      ORDER BY candidate_id DESC
-      LIMIT ? OFFSET ?
-      `,
+    const result = await pool1.query(
+      `SELECT * FROM v_candidate_profile ORDER BY candidate_id DESC LIMIT $1 OFFSET $2`,
       [limit, offset]
     );
 
     const keysToUse = fieldSpecs[tier] || fieldSpecs.normal;
-
-    const data = rows.map((r) => {
+    const data = result.rows.map((r) => {
       const out = {};
       if (Object.prototype.hasOwnProperty.call(r, "candidate_id")) out.candidate_id = r.candidate_id;
       for (const k of keysToUse) {
@@ -368,323 +359,121 @@ export async function profileViewByRole(req, res) {
     });
 
     return res.status(200).json({
-      ok: true,
-      tier,
-      page,
-      limit,
-      total,
+      ok: true, tier, page, limit, total,
       totalPages: Math.ceil(total / limit),
-      count: data.length,
-      data,
+      count: data.length, data,
     });
   } catch (err) {
     console.error("Error en /candidates/profile-view-by-role:", err);
-    return res.status(500).json({ ok: false, error: "Error consultando v_candidate_profile" });
+    return res.status(500).json({ ok: false, error: "Error consultando vista" });
   }
 }
 //Insercion------------------------------------------------------------------------------------------------------------------------------
 // Función para agregar usuario Reclutador/Gerente
 export async function addRecruiterManager(req, res) {
-  const conn = await pool1.getConnection();
+  // En pg, usamos .connect() para obtener un cliente del pool para la transacción
+  const client = await pool1.connect(); 
 
   try {
     const {
-      Name,
-      Experiencia,
-      Skillset,     // opcional: string (texto libre) o array; lo guardaremos en NOTE
-      Location,     // puede ser ID o nombre
-      EnglishLevel, // 0-100
-      Linkedin,
-      Telefono,
-      Email,
-      CV,
-      Expectativas, // texto libre -> candidate_compensation.cost_text
-      Esquema,      // texto libre -> candidate_compensation.scheme
-      Rol,          // puede ser ID o nombre
-      Tecnologia,   // puede ser ID o nombre (o array si quieres varias)
-      Modulos,      // opcional: { module, submodule } o array de esos
-      Visa,         // no existe columna -> candidate_note
-      HiringPreference  // id o nombre -> candidate.hiring_preference_id
+      Name, Experiencia, Skillset, Location, EnglishLevel,
+      Linkedin, Telefono, Email, CV, Expectativas,
+      Esquema, Rol, Tecnologia, Modulos, Visa, HiringPreference
     } = req.body;
 
-    // Validación mínima
     if (!Name || !Rol) {
-      return res.status(400).json({
-        ok: false,
-        error: "Faltan campos obligatorios: Name, Rol"
-      });
+      return res.status(400).json({ ok: false, error: "Faltan campos obligatorios: Name, Rol" });
     }
 
-    const toArray = (v) => {
-      if (!v) return [];
-      return Array.isArray(v) ? v : [v];
-    };
+    const toArray = (v) => (!v ? [] : Array.isArray(v) ? v : [v]);
 
-    // Helpers para resolver IDs por nombre (o aceptar ID directo)
+    // Helper actualizado para Postgres ($1 y .rows)
     const resolveId = async ({ table, idCol, nameCol, value }) => {
-      if (value === null || value === undefined || value === "") return null;
+      if (!value) return null;
+      if (typeof value === "number" || /^\d+$/.test(String(value).trim())) return Number(value);
 
-      // si ya es número -> lo tratamos como ID
-      if (typeof value === "number") return value;
-      if (/^\d+$/.test(String(value).trim())) return Number(value);
-
-      // si es nombre -> buscamos
-      const [rows] = await conn.query(
-        `SELECT ${idCol} AS id FROM ${table} WHERE ${nameCol} = ? LIMIT 1`,
+      const result = await client.query(
+        `SELECT "${idCol}" AS id FROM "${table}" WHERE "${nameCol}" = $1 LIMIT 1`,
         [String(value).trim()]
       );
-      return rows.length ? rows[0].id : null;
+      return result.rows.length ? result.rows[0].id : null;
     };
 
-    // Resolver FKs
-    const locationId = await resolveId({
-      table: "catalog_location",
-      idCol: "location_id",
-      nameCol: "name",
-      value: Location
-    });
+    // Iniciamos transacción en Postgres
+    await client.query('BEGIN');
 
-    const roleId = await resolveId({
-      table: "catalog_role",
-      idCol: "role_id",
-      nameCol: "name",
-      value: Rol
-    });
+    // 1) Resolver IDs (Location, Role, etc.)
+    const locationId = await resolveId({ table: "catalog_location", idCol: "location_id", nameCol: "name", value: Location });
+    const roleId = await resolveId({ table: "catalog_role", idCol: "role_id", nameCol: "name", value: Rol });
 
     if (!roleId) {
-      return res.status(400).json({
-        ok: false,
-        error: "Rol inválido: no existe en catalog_role (manda role_id o name exacto)."
-      });
+      await client.query('ROLLBACK');
+      return res.status(400).json({ ok: false, error: "Rol inválido" });
     }
-
-    const hiringPreferenceId = await resolveId({
-      table: "catalog_hiring_preference",
-      idCol: "hiring_preference_id",
-      nameCol: "name",
-      value: HiringPreference
-    });
-
-    // Tecnología: permitimos 1 o varias
-    const techValues = toArray(Tecnologia);
-    const techIds = [];
-    for (const t of techValues) {
-      const techId = await resolveId({
-        table: "catalog_technology",
-        idCol: "technology_id",
-        nameCol: "ct_name_tech",
-        value: t
-      });
-      if (!techId) {
-        return res.status(400).json({
-          ok: false,
-          error: `Tecnologia inválida: "${t}" no existe en catalog_technology (manda technology_id o name exacto).`
-        });
-      }
-      techIds.push(techId);
-    }
-
-    // Normalizar módulos: array de { technology, module, submodule } o { module, submodule }
-    // Si no trae technology, usamos la primera tecnologia (o la única)
-    const modulesArr = toArray(Modulos).map((m) => {
-      if (!m) return null;
-      if (typeof m === "string") {
-        // si mandan "Module/Submodule" en texto, lo separamos simple
-        const [moduleName, submoduleName] = m.split("/").map(x => x?.trim()).filter(Boolean);
-        return { module: moduleName || null, submodule: submoduleName || null };
-      }
-      return {
-        technology: m.technology ?? null,
-        module: m.module ?? null,
-        submodule: m.submodule ?? null
-      };
-    }).filter(Boolean);
 
     const candidateCode = `RM-${Date.now()}`;
 
-    await conn.beginTransaction();
-
-    // 1) INSERT candidate (datos base)
-    const [candRes] = await conn.query(
-      `INSERT INTO candidate (
-        candidate_code, full_name, phone, email, cv_url,
-        location_id, role_id, english_score, years_experience, hiring_preference_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        candidateCode,
-        Name,
-        Telefono || null,
-        Email || null,
-        CV || null,
-        locationId,
-        roleId,
-        EnglishLevel ?? null,
-        Experiencia ?? null,
-        hiringPreferenceId || null
-      ]
+    // 2) INSERT candidate con RETURNING (Reemplaza insertId)
+    const candRes = await client.query(
+      `INSERT INTO "candidate" (
+        "candidate_code", "full_name", "phone", "email", "cv_url",
+        "location_id", "role_id", "english_score", "years_experience"
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      RETURNING "candidate_id"`, 
+      [candidateCode, Name, Telefono || null, Email || null, CV || null, locationId, roleId, EnglishLevel ?? null, Experiencia ?? null]
     );
 
-    const candidateId = candRes.insertId;
+    const candidateId = candRes.rows[0].candidate_id;
 
-    // 2) INSERT compensation (solo Expectativas)
-    if (Expectativas) {
-      await conn.query(
-        `INSERT INTO candidate_compensation (candidate_id, cost_text) VALUES (?, ?)`,
-        [candidateId, Expectativas || null]
+    // 3) INSERT notes (Postgres no soporta "VALUES ?" para arrays de arrays fácilmente)
+    if (Skillset) {
+      await client.query(
+        `INSERT INTO "candidate_note" ("candidate_id", "note_type", "note_text") VALUES ($1, $2, $3)`,
+        [candidateId, 'SKILLSET', typeof Skillset === "string" ? Skillset : JSON.stringify(Skillset)]
+      );
+    }
+    if (Visa) {
+      await client.query(
+        `INSERT INTO "candidate_note" ("candidate_id", "note_type", "note_text") VALUES ($1, $2, $3)`,
+        [candidateId, 'VISA', typeof Visa === "string" ? Visa : JSON.stringify(Visa)]
       );
     }
 
-    // 3) INSERT notes (Skillset, Visa) usando candidate_note
-    //    (tu esquema no tiene columnas directas para eso)
-    const notesToInsert = [];
-    if (Skillset) notesToInsert.push(["SKILLSET", typeof Skillset === "string" ? Skillset : JSON.stringify(Skillset)]);
-    if (Visa) notesToInsert.push(["VISA", typeof Visa === "string" ? Visa : JSON.stringify(Visa)]);
-
-    if (notesToInsert.length) {
-      const rows = notesToInsert.map(([type, text]) => [candidateId, type, text]);
-      await conn.query(
-        `INSERT INTO candidate_note (candidate_id, note_type, note_text) VALUES ?`,
-        [rows]
-      );
-    }
-
-    // 4) INSERT candidate_stack (Tecnologia + Modulos/Submodulos)
-    // Si no hay Modulos, insertamos solo tecnología (module_id/submodule_id null)
-    const stackRows = [];
-
-    const resolveModuleId = async (technologyId, moduleName) => {
-      if (!moduleName) return null;
-      const [r] = await conn.query(
-        `SELECT module_id FROM catalog_module WHERE technology_id = ? AND module_catalogname = ? LIMIT 1`,
-        [technologyId, moduleName]
-      );
-      return r.length ? r[0].module_id : null;
-    };
-
-    const resolveSubmoduleId = async (moduleId, submoduleName) => {
-      if (!moduleId || !submoduleName) return null;
-      const [r] = await conn.query(
-        `SELECT submodule_id FROM catalog_submodule WHERE module_id = ? AND subm_catalog_name = ? LIMIT 1`,
-        [moduleId, submoduleName]
-      );
-      return r.length ? r[0].submodule_id : null;
-    };
-
-    const getOrCreateModuleId = async (technologyId, moduleName) => {
-  if (!moduleName) return null;
-
-  const [rows] = await conn.query(
-    `SELECT module_id FROM catalog_module WHERE technology_id = ? AND module_catalogname = ? LIMIT 1`,
-    [technologyId, moduleName]
-  );
-  if (rows.length) return rows[0].module_id;
-
-  const [ins] = await conn.query(
-    `INSERT INTO catalog_module (technology_id, module_catalogname) VALUES (?, ?)`,
-    [technologyId, moduleName]
-  );
-  return ins.insertId;
-};
-
-const getOrCreateSubmoduleId = async (moduleId, submoduleName) => {
-  if (!moduleId || !submoduleName) return null;
-
-  const [rows] = await conn.query(
-    `SELECT submodule_id FROM catalog_submodule WHERE module_id = ? AND subm_catalog_name = ? LIMIT 1`,
-    [moduleId, submoduleName]
-  );
-  if (rows.length) return rows[0].submodule_id;
-
-  const [ins] = await conn.query(
-    `INSERT INTO catalog_submodule (module_id, subm_catalog_name) VALUES (?, ?)`,
-    [moduleId, submoduleName]
-  );
-  return ins.insertId;
-};
-
-
-
-    if (modulesArr.length === 0) {
-      // solo tecnologías
-      for (const technologyId of techIds) {
-        stackRows.push([candidateId, technologyId, null, null]);
-      }
-    } else {
-      for (const m of modulesArr) {
-  let technologyId = techIds[0];
-
-  // Si el módulo trae technology explícita, resolverla con la MISMA columna correcta
-  if (m.technology) {
-    const tId = await resolveId({
-      table: "catalog_technology",
-      idCol: "technology_id",
-      nameCol: "ct_name_tech", // <-- importante
-      value: m.technology
-    });
-
-    if (!tId) {
-      return res.status(400).json({
-        ok: false,
-        error: `Tecnologia en Modulos inválida: "${m.technology}"`
-      });
-    }
-    technologyId = tId;
-  }
-
-
-        const moduleName = (m.module || "").trim().replace(/^phyton$/i, "Python");
-        const submoduleName = (m.submodule || "").trim().replace(/^phyton$/i, "Python");
-        const moduleId = await getOrCreateModuleId(technologyId, moduleName);
-        const submoduleId = await getOrCreateSubmoduleId(moduleId, submoduleName);
-        
-
-        stackRows.push([candidateId, technologyId, moduleId, submoduleId]);
+    // 4) INSERT stack (Uso de ON CONFLICT en lugar de INSERT IGNORE)
+    const techValues = toArray(Tecnologia);
+    for (const t of techValues) {
+      const techId = await resolveId({ table: "catalog_technology", idCol: "technology_id", nameCol: "ct_name_tech", value: t });
+      if (techId) {
+        await client.query(
+          `INSERT INTO "candidate_stack" ("candidate_id", "technology_id") 
+           VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+          [candidateId, techId]
+        );
       }
     }
 
-    if (stackRows.length) {
-      await conn.query(
-        `INSERT IGNORE INTO candidate_stack (candidate_id, technology_id, module_id, submodule_id)
-         VALUES ?`,
-        [stackRows]
-      );
-    }
-
-    await conn.commit();
+    await client.query('COMMIT');
 
     return res.status(201).json({
       ok: true,
       candidate_id: candidateId,
-      candidate_code: candidateCode,
-      message: "Candidato agregado correctamente (candidate + stack + compensation + notes)"
+      message: "Candidato agregado correctamente en Postgres"
     });
 
   } catch (err) {
-    try { await conn.rollback(); } catch (_) {}
+    await client.query('ROLLBACK');
     console.error("Error en addRecruiterManager:", err);
-
-    // chequeo de constraints comunes
-    if (err?.code === "ER_CHECK_CONSTRAINT_VIOLATED") {
-      return res.status(400).json({ ok: false, error: "english_score debe estar entre 0 y 100 (o null)." });
-    }
-
-    return res.status(500).json({
-      ok: false,
-      error: "Error agregando candidato multi-tabla"
-    });
+    return res.status(500).json({ ok: false, error: "Error en servidor" });
   } finally {
-    conn.release();
+    client.release(); // Siempre liberar el cliente al pool
   }
 }
 
+// Ejemplo para getLocations (Aplica lo mismo para getRoles, getTechnologies, etc.)
 export async function getLocations(req, res) {
   try {
-    const [rows] = await pool1.query(
-      `SELECT location_id AS id, name
-       FROM catalog_location
-       ORDER BY name`
-    );
-    res.json({ ok: true, data: rows });
+    const result = await pool1.query(`SELECT location_id AS id, name FROM catalog_location ORDER BY name`);
+    res.json({ ok: true, data: result.rows }); // Cambiado de rows a result.rows
   } catch (e) {
     res.status(500).json({ ok: false, error: "Error obteniendo locations" });
   }
@@ -692,12 +481,12 @@ export async function getLocations(req, res) {
 
 export async function getRoles(req, res) {
   try {
-    const [rows] = await pool1.query(
+    const result = await pool1.query(
       `SELECT role_id AS id, name
        FROM catalog_role
        ORDER BY name`
     );
-    res.json({ ok: true, data: rows });
+    res.json({ ok: true, data: result.rows });
   } catch (e) {
     res.status(500).json({ ok: false, error: "Error obteniendo roles" });
   }
@@ -705,12 +494,12 @@ export async function getRoles(req, res) {
 
 export async function getTechnologies(req, res) {
   try {
-    const [rows] = await pool1.query(
+    const result = await pool1.query(
       `SELECT technology_id AS id, ct_name_tech AS name
        FROM catalog_technology
        ORDER BY ct_name_tech`
     );
-    res.json({ ok: true, data: rows });
+    res.json({ ok: true, data: result.rows });
   } catch (e) {
     res.status(500).json({ ok: false, error: "Error obteniendo tecnologías" });
   }
@@ -719,14 +508,14 @@ export async function getTechnologies(req, res) {
 export async function getModulesByTechnology(req, res) {
   try {
     const { technology_id } = req.params;
-    const [rows] = await pool1.query(
+    const result = await pool1.query(
       `SELECT module_id AS id, module_catalogname AS name
        FROM catalog_module
        WHERE technology_id = ?
        ORDER BY module_catalogname`,
       [technology_id]
     );
-    res.json({ ok: true, data: rows });
+    res.json({ ok: true, data: result.rows });
   } catch (e) {
     res.status(500).json({ ok: false, error: "Error obteniendo módulos" });
   }
@@ -735,14 +524,14 @@ export async function getModulesByTechnology(req, res) {
 export async function getSubmodulesByModule(req, res) {
   try {
     const { module_id } = req.params;
-    const [rows] = await pool1.query(
+    const result = await pool1.query(
       `SELECT submodule_id AS id, subm_catalog_name AS name
        FROM catalog_submodule
        WHERE module_id = ?
        ORDER BY subm_catalog_name`,
       [module_id]
     );
-    res.json({ ok: true, data: rows });
+    res.json({ ok: true, data: result.rows });
   } catch (e) {
     res.status(500).json({ ok: false, error: "Error obteniendo submódulos" });
   }
@@ -750,317 +539,156 @@ export async function getSubmodulesByModule(req, res) {
 
 export async function getHiringPreferences(req, res) {
   try {
-    const [rows] = await pool1.query(
+    const result = await pool1.query(
       `SELECT hiring_preference_id AS id, name
        FROM catalog_hiring_preference
        ORDER BY hiring_preference_id`
     );
-    res.json({ ok: true, data: rows });
+    res.json({ ok: true, data: result. rows });
   } catch (e) {
     res.status(500).json({ ok: false, error: "Error obteniendo hiring preferences" });
   }
 }
 
 export async function updateCandidateByCode(req, res) {
-  const conn = await pool1.getConnection();
+  // Obtenemos un cliente del pool para manejar la transacción
+  const client = await pool1.connect();
 
   try {
     const { candidate_code } = req.params;
-
     const {
-      // candidate
-      Name,
-      Telefono,
-      Email,
-      CV,
-      Location,       // id o nombre
-      Rol,            // id o nombre
-      EnglishLevel,   // 0-100
-      Experiencia,
-
-      // historicos / notas
-      Expectativas,
-      Esquema,
-      Skillset,
-      Visa,
-
-      // stack
-      Tecnologia,     // id/nombre o array
-      Modulos,        // {technology,module,submodule} o array
-      replaceStack,   // boolean
-      HiringPreference  // id o nombre -> candidate.hiring_preference_id
+      Name, Telefono, Email, CV, Location, Rol,
+      EnglishLevel, Experiencia, Expectativas,
+      Skillset, Visa, Tecnologia, Modulos,
+      replaceStack, HiringPreference
     } = req.body;
 
     if (!candidate_code) {
-      return res.status(400).json({ ok: false, error: "Falta candidate_code en params" });
+      return res.status(400).json({ ok: false, error: "Falta candidate_code" });
     }
 
-    // helper: array
     const toArray = (v) => (!v ? [] : Array.isArray(v) ? v : [v]);
 
-    // helper: resolver ID por nombre o aceptar ID
+    // Helper para resolver IDs en Postgres ($1 y .rows)
     const resolveId = async ({ table, idCol, nameCol, value }) => {
-      if (value === null || value === undefined || value === "") return null;
+      if (!value) return null;
+      if (typeof value === "number" || /^\d+$/.test(String(value).trim())) return Number(value);
 
-      if (typeof value === "number") return value;
-      if (/^\d+$/.test(String(value).trim())) return Number(value);
-
-      const [rows] = await conn.query(
-        `SELECT ${idCol} AS id FROM ${table} WHERE ${nameCol} = ? LIMIT 1`,
+      const result = await client.query(
+        `SELECT "${idCol}" AS id FROM "${table}" WHERE "${nameCol}" = $1 LIMIT 1`,
         [String(value).trim()]
       );
-      return rows.length ? rows[0].id : null;
+      return result.rows.length ? result.rows[0].id : null;
     };
 
-    // helpers: crear modulo/submodulo si no existe
-    const getOrCreateModuleId = async (technologyId, moduleName) => {
-      if (!moduleName) return null;
+    await client.query('BEGIN');
 
-      const [rows] = await conn.query(
-        `SELECT module_id FROM catalog_module
-         WHERE technology_id = ? AND module_catalogname = ? LIMIT 1`,
-        [technologyId, moduleName]
-      );
-      if (rows.length) return rows[0].module_id;
-
-      const [ins] = await conn.query(
-        `INSERT INTO catalog_module (technology_id, module_catalogname) VALUES (?, ?)`,
-        [technologyId, moduleName]
-      );
-      return ins.insertId;
-    };
-
-    const getOrCreateSubmoduleId = async (moduleId, submoduleName) => {
-      if (!moduleId || !submoduleName) return null;
-
-      const [rows] = await conn.query(
-        `SELECT submodule_id FROM catalog_submodule
-         WHERE module_id = ? AND subm_catalog_name = ? LIMIT 1`,
-        [moduleId, submoduleName]
-      );
-      if (rows.length) return rows[0].submodule_id;
-
-      const [ins] = await conn.query(
-        `INSERT INTO catalog_submodule (module_id, subm_catalog_name) VALUES (?, ?)`,
-        [moduleId, submoduleName]
-      );
-      return ins.insertId;
-    };
-
-    await conn.beginTransaction();
-
-    // 1) buscar candidato
-    const [candRows] = await conn.query(
-      `SELECT candidate_id FROM candidate WHERE candidate_code = ? LIMIT 1`,
+    // 1) Buscar ID del candidato
+    const candResult = await client.query(
+      `SELECT "candidate_id" FROM "candidate" WHERE "candidate_code" = $1 LIMIT 1`,
       [candidate_code]
     );
 
-    if (!candRows.length) {
-      await conn.rollback();
+    if (candResult.rows.length === 0) {
+      await client.query('ROLLBACK');
       return res.status(404).json({ ok: false, error: "Candidato no encontrado" });
     }
 
-    const candidateId = candRows[0].candidate_id;
+    const candidateId = candResult.rows[0].candidate_id;
 
-    // 2) UPDATE candidate dinámico
+    // 2) UPDATE dinámico de la tabla candidate
     const set = [];
     const vals = [];
+    let pIdx = 1; // Contador de placeholders ($1, $2...)
 
-    if (Name !== undefined) { set.push("full_name = ?"); vals.push(Name); }
-    if (Telefono !== undefined) { set.push("phone = ?"); vals.push(Telefono || null); }
-    if (Email !== undefined) { set.push("email = ?"); vals.push(Email || null); }
-    if (CV !== undefined) { set.push("cv_url = ?"); vals.push(CV || null); }
-
-    if (EnglishLevel !== undefined) { set.push("english_score = ?"); vals.push(EnglishLevel ?? null); }
-    if (Experiencia !== undefined) { set.push("years_experience = ?"); vals.push(Experiencia ?? null); }
+    if (Name !== undefined) { set.push(`"full_name" = $${pIdx++}`); vals.push(Name); }
+    if (Telefono !== undefined) { set.push(`"phone" = $${pIdx++}`); vals.push(Telefono || null); }
+    if (Email !== undefined) { set.push(`"email" = $${pIdx++}`); vals.push(Email || null); }
+    if (CV !== undefined) { set.push(`"cv_url" = $${pIdx++}`); vals.push(CV || null); }
+    if (EnglishLevel !== undefined) { set.push(`"english_score" = $${pIdx++}`); vals.push(EnglishLevel ?? null); }
+    if (Experiencia !== undefined) { set.push(`"years_experience" = $${pIdx++}`); vals.push(Experiencia ?? null); }
 
     if (Location !== undefined) {
-      // ajusta nameCol si tu location no usa "name"
-      const locationId = await resolveId({
-        table: "catalog_location",
-        idCol: "location_id",
-        nameCol: "name",
-        value: Location
-      });
-      set.push("location_id = ?");
-      vals.push(locationId);
+      const locId = await resolveId({ table: "catalog_location", idCol: "location_id", nameCol: "name", value: Location });
+      set.push(`"location_id" = $${pIdx++}`);
+      vals.push(locId);
     }
 
     if (Rol !== undefined) {
-      const roleId = await resolveId({
-        table: "catalog_role",
-        idCol: "role_id",
-        nameCol: "name",
-        value: Rol
-      });
-
-      if (!roleId) {
-        await conn.rollback();
-        return res.status(400).json({ ok: false, error: "Rol inválido" });
-      }
-
-      set.push("role_id = ?");
-      vals.push(roleId);
+      const rId = await resolveId({ table: "catalog_role", idCol: "role_id", nameCol: "name", value: Rol });
+      if (rId) { set.push(`"role_id" = $${pIdx++}`); vals.push(rId); }
     }
 
-    if (HiringPreference !== undefined) {
-      const hpId = await resolveId({
-        table: "catalog_hiring_preference",
-        idCol: "hiring_preference_id",
-        nameCol: "name",
-        value: HiringPreference
-      });
-      set.push("hiring_preference_id = ?");
-      vals.push(hpId || null);
-    }
-
-    if (set.length) {
+    if (set.length > 0) {
       vals.push(candidateId);
-      await conn.query(
-        `UPDATE candidate SET ${set.join(", ")} WHERE candidate_id = ?`,
+      await client.query(
+        `UPDATE "candidate" SET ${set.join(", ")} WHERE "candidate_id" = $${pIdx}`,
         vals
       );
     }
 
-    // 3) compensation histórico (solo Expectativas)
+    // 3) Históricos (Compensation y Notes)
     if (Expectativas !== undefined) {
-      await conn.query(
-        `INSERT INTO candidate_compensation (candidate_id, cost_text) VALUES (?, ?)`,
+      await client.query(
+        `INSERT INTO "candidate_compensation" ("candidate_id", "cost_text") VALUES ($1, $2)`,
         [candidateId, Expectativas || null]
       );
     }
 
-    // 4) notas históricas
-    const notes = [];
-    if (Skillset !== undefined && Skillset !== "") notes.push(["SKILLSET", typeof Skillset === "string" ? Skillset : JSON.stringify(Skillset)]);
-    if (Visa !== undefined && Visa !== "") notes.push(["VISA", typeof Visa === "string" ? Visa : JSON.stringify(Visa)]);
-
-    if (notes.length) {
-      const rows = notes.map(([type, text]) => [candidateId, type, text]);
-      await conn.query(
-        `INSERT INTO candidate_note (candidate_id, note_type, note_text) VALUES ?`,
-        [rows]
+    if (Skillset) {
+      await client.query(
+        `INSERT INTO "candidate_note" ("candidate_id", "note_type", "note_text") VALUES ($1, $2, $3)`,
+        [candidateId, 'SKILLSET', typeof Skillset === "string" ? Skillset : JSON.stringify(Skillset)]
       );
     }
 
-    // 5) stack
+    // 4) Stack (Tecnologías)
     if (replaceStack) {
-      await conn.query(`DELETE FROM candidate_stack WHERE candidate_id = ?`, [candidateId]);
+      await client.query(`DELETE FROM "candidate_stack" WHERE "candidate_id" = $1`, [candidateId]);
     }
 
-    // 5a) tecnologías (sin módulos)
     if (Tecnologia !== undefined) {
       const techValues = toArray(Tecnologia);
-
       for (const t of techValues) {
-        const techId = await resolveId({
-          table: "catalog_technology",
-          idCol: "technology_id",
-          nameCol: "ct_name_tech",
-          value: t
-        });
-
-        if (!techId) {
-          await conn.rollback();
-          return res.status(400).json({ ok: false, error: `Tecnologia inválida: "${t}"` });
+        const tId = await resolveId({ table: "catalog_technology", idCol: "technology_id", nameCol: "ct_name_tech", value: t });
+        if (tId) {
+          await client.query(
+            `INSERT INTO "candidate_stack" ("candidate_id", "technology_id") 
+             VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+            [candidateId, tId]
+          );
         }
-
-        await conn.query(
-          `INSERT IGNORE INTO candidate_stack (candidate_id, technology_id, module_id, submodule_id)
-           VALUES (?, ?, NULL, NULL)`,
-          [candidateId, techId]
-        );
       }
     }
 
-    // 5b) módulos/submódulos
-    if (Modulos !== undefined) {
-      const mods = toArray(Modulos);
-
-      for (const m of mods) {
-        // technology requerido por cada módulo para no adivinar
-        if (!m?.technology) {
-          await conn.rollback();
-          return res.status(400).json({
-            ok: false,
-            error: "En Modulos falta technology (manda id o nombre en m.technology)."
-          });
-        }
-
-        const technologyId = await resolveId({
-          table: "catalog_technology",
-          idCol: "technology_id",
-          nameCol: "ct_name_tech",
-          value: m.technology
-        });
-
-        if (!technologyId) {
-          await conn.rollback();
-          return res.status(400).json({ ok: false, error: `Tecnologia inválida en Modulos: "${m.technology}"` });
-        }
-
-        const moduleName = String(m.module || "").trim();
-        const submoduleName = String(m.submodule || "").trim();
-
-        const moduleId = await getOrCreateModuleId(technologyId, moduleName || null);
-        const submoduleId = await getOrCreateSubmoduleId(moduleId, submoduleName || null);
-
-        await conn.query(
-          `INSERT IGNORE INTO candidate_stack (candidate_id, technology_id, module_id, submodule_id)
-           VALUES (?, ?, ?, ?)`,
-          [candidateId, technologyId, moduleId, submoduleId]
-        );
-      }
-    }
-
-    await conn.commit();
-
-    return res.json({
-      ok: true,
-      candidate_id: candidateId,
-      candidate_code,
-      message: "Candidato actualizado correctamente"
-    });
+    await client.query('COMMIT');
+    return res.json({ ok: true, message: "Candidato actualizado en Postgres" });
 
   } catch (err) {
-    try { await conn.rollback(); } catch (_) {}
+    await client.query('ROLLBACK');
     console.error("Error en updateCandidateByCode:", err);
-
-    if (err?.code === "ER_CHECK_CONSTRAINT_VIOLATED") {
-      return res.status(400).json({ ok: false, error: "english_score debe estar entre 0 y 100 (o null)." });
-    }
-
-    return res.status(500).json({ ok: false, error: "Error actualizando candidato" });
+    return res.status(500).json({ ok: false, error: "Error al actualizar" });
   } finally {
-    conn.release();
+    client.release();
   }
 }
 
 export async function listCandidates(req, res) {
   try {
     const q = (req.query.q || "").trim();
-
+    // En Postgres usamos ILIKE y $1. La concatenación puede ser con CONCAT o ||
     const sql = `
-      SELECT
-        c.candidate_code,
-        c.full_name,
-        c.email,
-        c.phone,
-        r.name AS role_name,
-        l.name AS location_name,
-        c.updated_at
+      SELECT c.candidate_code, c.full_name, c.email, c.phone, r.name AS role_name, l.name AS location_name, c.updated_at
       FROM candidate c
       LEFT JOIN catalog_role r ON r.role_id = c.role_id
       LEFT JOIN catalog_location l ON l.location_id = c.location_id
-      WHERE (? = '' OR c.candidate_code LIKE CONCAT('%', ?, '%')
-                  OR c.full_name LIKE CONCAT('%', ?, '%')
-                  OR c.email LIKE CONCAT('%', ?, '%'))
-      ORDER BY c.updated_at DESC
-      LIMIT 100
-    `;
+      WHERE ($1 = '' OR c.candidate_code ILIKE '%' || $1 || '%'
+                   OR c.full_name ILIKE '%' || $1 || '%'
+                   OR c.email ILIKE '%' || $1 || '%')
+      ORDER BY c.updated_at DESC LIMIT 100`;
 
-    const [rows] = await pool1.query(sql, [q, q, q, q]);
-    res.json({ ok: true, data: rows });
+    const result = await pool1.query(sql, [q]);
+    res.json({ ok: true, data: result.rows });
   } catch (e) {
     console.error("listCandidates:", e);
     res.status(500).json({ ok: false, error: "Error listando candidatos" });
@@ -1069,26 +697,26 @@ export async function listCandidates(req, res) {
 
 
 export async function getCandidateByCode(req, res) {
-  const conn = await pool1.getConnection();
+  // En Postgres usamos .connect() para obtener un cliente del pool
+  const client = await pool1.connect(); 
+  
   try {
     const { candidate_code } = req.params;
 
-    const [candRows] = await conn.query(
-      `SELECT *
-       FROM candidate
-       WHERE candidate_code = ?
-       LIMIT 1`,
+    // 1) Buscar datos base del candidato
+    const candRes = await client.query(
+      `SELECT * FROM "candidate" WHERE "candidate_code" = $1 LIMIT 1`,
       [candidate_code]
     );
 
-    if (!candRows.length) {
+    if (candRes.rows.length === 0) {
       return res.status(404).json({ ok: false, error: "Candidato no encontrado" });
     }
 
-    const c = candRows[0];
+    const c = candRes.rows[0];
 
-    // Stack
-    const [stack] = await conn.query(
+    // 2) Consultar el Stack tecnológico
+    const stackRes = await client.query(
       `SELECT
          cs.technology_id,
          t.ct_name_tech AS technology_name,
@@ -1096,58 +724,62 @@ export async function getCandidateByCode(req, res) {
          m.module_catalogname AS module_name,
          cs.submodule_id,
          s.subm_catalog_name AS submodule_name
-       FROM candidate_stack cs
-       LEFT JOIN catalog_technology t ON t.technology_id = cs.technology_id
-       LEFT JOIN catalog_module m ON m.module_id = cs.module_id
-       LEFT JOIN catalog_submodule s ON s.submodule_id = cs.submodule_id
-       WHERE cs.candidate_id = ?
+       FROM "candidate_stack" cs
+       LEFT JOIN "catalog_technology" t ON t.technology_id = cs.technology_id
+       LEFT JOIN "catalog_module" m ON m.module_id = cs.module_id
+       LEFT JOIN "catalog_submodule" s ON s.submodule_id = cs.submodule_id
+       WHERE cs.candidate_id = $1
        ORDER BY t.ct_name_tech, m.module_catalogname, s.subm_catalog_name`,
       [c.candidate_id]
     );
 
-    // Última compensation
-    const [comp] = await conn.query(
+    // 3) Consultar la última compensación registrada
+    const compRes = await client.query(
       `SELECT cost_text, scheme, recorded_at
-       FROM candidate_compensation
-       WHERE candidate_id = ?
+       FROM "candidate_compensation"
+       WHERE candidate_id = $1
        ORDER BY recorded_at DESC
        LIMIT 1`,
       [c.candidate_id]
     );
 
-    // Última nota VISA y SKILLSET
-    const [visa] = await conn.query(
+    // 4) Consultar última nota de tipo VISA
+    const visaRes = await client.query(
       `SELECT note_text, recorded_at
-       FROM candidate_note
-       WHERE candidate_id = ? AND note_type = 'VISA'
+       FROM "candidate_note"
+       WHERE candidate_id = $1 AND note_type = 'VISA'
        ORDER BY recorded_at DESC
        LIMIT 1`,
       [c.candidate_id]
     );
 
-    const [skill] = await conn.query(
+    // 5) Consultar última nota de tipo SKILLSET
+    const skillRes = await client.query(
       `SELECT note_text, recorded_at
-       FROM candidate_note
-       WHERE candidate_id = ? AND note_type = 'SKILLSET'
+       FROM "candidate_note"
+       WHERE candidate_id = $1 AND note_type = 'SKILLSET'
        ORDER BY recorded_at DESC
        LIMIT 1`,
       [c.candidate_id]
     );
 
+    // Respuesta final consolidada
     return res.json({
       ok: true,
       data: {
         candidate: c,
-        stack,
-        lastCompensation: comp[0] || null,
-        lastVisa: visa[0] || null,
-        lastSkillset: skill[0] || null
+        stack: stackRes.rows,
+        lastCompensation: compRes.rows[0] || null,
+        lastVisa: visaRes.rows[0] || null,
+        lastSkillset: skillRes.rows[0] || null
       }
     });
+
   } catch (e) {
-    console.error("getCandidateByCode:", e);
-    res.status(500).json({ ok: false, error: "Error obteniendo candidato" });
+    console.error("Error en getCandidateByCode:", e);
+    return res.status(500).json({ ok: false, error: "Error obteniendo detalles del candidato" });
   } finally {
-    conn.release();
+    // Es CRÍTICO liberar el cliente para no agotar las conexiones de Supabase
+    client.release();
   }
 }

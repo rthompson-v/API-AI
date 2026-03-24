@@ -1,6 +1,7 @@
 /node_modules
 /docs
 .env
+.env2
 setupVectorStore.js
 setupVectorStore.js
 setupVectorStore_Last.js
