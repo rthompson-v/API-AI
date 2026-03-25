@@ -489,7 +489,6 @@ export async function addRecruiterManager(req, res) {
     );
 
     const candidateId = Number(candRes.rows[0].candidate_id);
-    console.log("[addRecruiterManager] candidateId type:", typeof candidateId, "value:", candidateId);
 
     // 3) INSERT notes (Postgres no soporta "VALUES ?" para arrays de arrays fácilmente)
     if (Skillset) {
@@ -507,11 +506,9 @@ export async function addRecruiterManager(req, res) {
 
     // 4) INSERT stack — pre-resolvemos IDs de tecnología antes de insertar
     const techValues = toArray(Tecnologia);
-    console.log("[addRecruiterManager] candidateId:", candidateId, "Tecnologias:", techValues);
     for (const t of techValues) {
       if (!t || String(t).trim() === "") continue;
       const techId = await resolveOrCreateTech(t);
-      console.log("[addRecruiterManager] tech:", t, "-> techId:", techId, typeof techId);
       if (techId != null) {
         try {
           // Reset sequence in case it's out of sync, then insert
@@ -527,9 +524,8 @@ export async function addRecruiterManager(req, res) {
              VALUES ($1::bigint, $2::integer)`,
             [candidateId, Number(techId)]
           );
-          console.log("[addRecruiterManager] stack INSERT OK, rowCount:", stackRes.rowCount);
         } catch (stackErr) {
-          console.error("[addRecruiterManager] stack INSERT FAILED:", stackErr.message, "code:", stackErr.code);
+          console.error("[addRecruiterManager] stack INSERT FAILED:", stackErr.message);
           // Si es sequence out of sync, intentar reset y retry
           if (stackErr.code === '23505') {
             try {
@@ -545,7 +541,6 @@ export async function addRecruiterManager(req, res) {
                  VALUES ($1::bigint, $2::integer)`,
                 [candidateId, Number(techId)]
               );
-              console.log("[addRecruiterManager] stack INSERT OK after sequence reset");
             } catch (retryErr) {
               console.error("[addRecruiterManager] stack retry FAILED:", retryErr.message);
             }
@@ -554,9 +549,7 @@ export async function addRecruiterManager(req, res) {
       }
     }
 
-    console.log("[addRecruiterManager] About to COMMIT for candidateId:", candidateId);
     await client.query('COMMIT');
-    console.log("[addRecruiterManager] COMMIT done");
 
     return res.status(201).json({
       ok: true,
@@ -725,7 +718,6 @@ export async function updateCandidateByCode(req, res) {
     }
 
     const candidateId = Number(candResult.rows[0].candidate_id);
-    console.log("[updateCandidate] candidateId type:", typeof candidateId, "value:", candidateId);
 
     // 2) UPDATE dinámico de la tabla candidate
     const set = [];
@@ -786,11 +778,9 @@ export async function updateCandidateByCode(req, res) {
 
     if (Tecnologia !== undefined) {
       const techValues = toArray(Tecnologia);
-      console.log("[updateCandidate] candidateId:", candidateId, "Tecnologias:", techValues);
       for (const t of techValues) {
         if (!t || String(t).trim() === "") continue;
         const tId = await resolveOrCreateTech(t);
-        console.log("[updateCandidate] tech:", t, "-> techId:", tId, typeof tId);
         if (tId != null) {
           try {
             await client.query(`
@@ -805,9 +795,8 @@ export async function updateCandidateByCode(req, res) {
                VALUES ($1::bigint, $2::integer)`,
               [candidateId, Number(tId)]
             );
-            console.log("[updateCandidate] stack INSERT OK, rowCount:", stackRes.rowCount);
           } catch (stackErr) {
-            console.error("[updateCandidate] stack INSERT FAILED:", stackErr.message, "code:", stackErr.code);
+            console.error("[updateCandidate] stack INSERT FAILED:", stackErr.message);
             if (stackErr.code === '23505') {
               try {
                 await client.query(`
@@ -822,7 +811,6 @@ export async function updateCandidateByCode(req, res) {
                    VALUES ($1::bigint, $2::integer)`,
                   [candidateId, Number(tId)]
                 );
-                console.log("[updateCandidate] stack INSERT OK after sequence reset");
               } catch (retryErr) {
                 console.error("[updateCandidate] stack retry FAILED:", retryErr.message);
               }
