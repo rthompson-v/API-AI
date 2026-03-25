@@ -426,23 +426,34 @@ export async function addRecruiterManager(req, res) {
       return result.rows.length ? result.rows[0].id : null;
     };
 
-    // Helper: obtiene o crea una tecnología por nombre, devuelve su ID
+    // Helper: obtiene o crea una tecnología por nombre (case-insensitive), devuelve su ID
     const resolveOrCreateTech = async (techName) => {
       if (!techName) return null;
       const name = String(techName).trim();
       if (!name) return null;
-      // Buscar primero
+      // Buscar (case-insensitive)
       const found = await client.query(
-        `SELECT technology_id AS id FROM "catalog_technology" WHERE ct_name_tech = $1 LIMIT 1`,
+        `SELECT technology_id AS id FROM "catalog_technology"
+         WHERE LOWER(ct_name_tech) = LOWER($1) LIMIT 1`,
         [name]
       );
       if (found.rows.length) return found.rows[0].id;
-      // Si no existe, crearla
-      const created = await client.query(
-        `INSERT INTO "catalog_technology" (ct_name_tech) VALUES ($1) RETURNING technology_id AS id`,
-        [name]
-      );
-      return created.rows[0].id;
+      // Si no existe, crearla — doble check para evitar race conditions
+      try {
+        const created = await client.query(
+          `INSERT INTO "catalog_technology" (ct_name_tech) VALUES ($1) RETURNING technology_id AS id`,
+          [name]
+        );
+        return created.rows[0].id;
+      } catch (e) {
+        // Si falla por duplicate key, buscarla de nuevo
+        const retry = await client.query(
+          `SELECT technology_id AS id FROM "catalog_technology"
+           WHERE LOWER(ct_name_tech) = LOWER($1) LIMIT 1`,
+          [name]
+        );
+        return retry.rows.length ? retry.rows[0].id : null;
+      }
     };
 
     // Iniciamos transacción en Postgres
@@ -495,12 +506,16 @@ export async function addRecruiterManager(req, res) {
 
     // 4) INSERT stack — crea la tecnología si no existe en el catálogo
     const techValues = toArray(Tecnologia);
+    console.log("[addRecruiterManager] Tecnologias a insertar:", techValues);
     for (const t of techValues) {
+      if (!t || String(t).trim() === "") continue;
       const techId = await resolveOrCreateTech(t);
+      console.log("[addRecruiterManager] tech:", t, "-> id:", techId);
       if (techId) {
         await client.query(
           `INSERT INTO "candidate_stack" ("candidate_id", "technology_id")
-           VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+           VALUES ($1, $2)
+           ON CONFLICT DO NOTHING`,
           [candidateId, techId]
         );
       }
@@ -634,21 +649,31 @@ export async function updateCandidateByCode(req, res) {
       return result.rows.length ? result.rows[0].id : null;
     };
 
-    // Helper: obtiene o crea una tecnología por nombre
+    // Helper: obtiene o crea una tecnología por nombre (case-insensitive)
     const resolveOrCreateTech = async (techName) => {
       if (!techName) return null;
       const name = String(techName).trim();
       if (!name) return null;
       const found = await client.query(
-        `SELECT technology_id AS id FROM "catalog_technology" WHERE ct_name_tech = $1 LIMIT 1`,
+        `SELECT technology_id AS id FROM "catalog_technology"
+         WHERE LOWER(ct_name_tech) = LOWER($1) LIMIT 1`,
         [name]
       );
       if (found.rows.length) return found.rows[0].id;
-      const created = await client.query(
-        `INSERT INTO "catalog_technology" (ct_name_tech) VALUES ($1) RETURNING technology_id AS id`,
-        [name]
-      );
-      return created.rows[0].id;
+      try {
+        const created = await client.query(
+          `INSERT INTO "catalog_technology" (ct_name_tech) VALUES ($1) RETURNING technology_id AS id`,
+          [name]
+        );
+        return created.rows[0].id;
+      } catch (e) {
+        const retry = await client.query(
+          `SELECT technology_id AS id FROM "catalog_technology"
+           WHERE LOWER(ct_name_tech) = LOWER($1) LIMIT 1`,
+          [name]
+        );
+        return retry.rows.length ? retry.rows[0].id : null;
+      }
     };
 
     await client.query('BEGIN');
@@ -725,12 +750,16 @@ export async function updateCandidateByCode(req, res) {
 
     if (Tecnologia !== undefined) {
       const techValues = toArray(Tecnologia);
+      console.log("[updateCandidate] Tecnologias a insertar:", techValues);
       for (const t of techValues) {
+        if (!t || String(t).trim() === "") continue;
         const tId = await resolveOrCreateTech(t);
+        console.log("[updateCandidate] tech:", t, "-> id:", tId);
         if (tId) {
           await client.query(
             `INSERT INTO "candidate_stack" ("candidate_id", "technology_id")
-             VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+             VALUES ($1, $2)
+             ON CONFLICT DO NOTHING`,
             [candidateId, tId]
           );
         }
