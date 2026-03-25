@@ -413,14 +413,22 @@ export async function addRecruiterManager(req, res) {
 
     const candidateCode = `RM-${Date.now()}`;
 
-    // 2) INSERT candidate con RETURNING (Reemplaza insertId)
+    // Resolver hiring_preference_id
+    const hiringPrefId = HiringPreference
+      ? await resolveId({ table: "catalog_hiring_preference", idCol: "hiring_preference_id", nameCol: "name", value: HiringPreference })
+      : null;
+
+    // 2) INSERT candidate con RETURNING
     const candRes = await client.query(
       `INSERT INTO "candidate" (
         "candidate_code", "full_name", "phone", "email", "cv_url",
-        "location_id", "role_id", "english_score", "years_experience"
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-      RETURNING "candidate_id"`, 
-      [candidateCode, Name, Telefono || null, Email || null, CV || null, locationId, roleId, EnglishLevel ?? null, Experiencia ?? null]
+        "location_id", "role_id", "english_score", "years_experience",
+        "hiring_preference_id", "linkedin_url"
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      RETURNING "candidate_id"`,
+      [candidateCode, Name, Telefono || null, Email || null, CV || null,
+       locationId, roleId, EnglishLevel ?? null, Experiencia ?? null,
+       hiringPrefId, req.body.Linkedin || null]
     );
 
     const candidateId = candRes.rows[0].candidate_id;
@@ -619,6 +627,18 @@ export async function updateCandidateByCode(req, res) {
       if (rId) { set.push(`"role_id" = $${pIdx++}`); vals.push(rId); }
     }
 
+    if (HiringPreference !== undefined) {
+      const hpId = await resolveId({ table: "catalog_hiring_preference", idCol: "hiring_preference_id", nameCol: "name", value: HiringPreference });
+      set.push(`"hiring_preference_id" = $${pIdx++}`);
+      vals.push(hpId);
+    }
+
+    // Linkedin se guarda en la columna linkedin_url (o linkedin según tu esquema)
+    if (req.body.Linkedin !== undefined) {
+      set.push(`"linkedin_url" = $${pIdx++}`);
+      vals.push(req.body.Linkedin || null);
+    }
+
     if (set.length > 0) {
       vals.push(candidateId);
       await client.query(
@@ -703,9 +723,19 @@ export async function getCandidateByCode(req, res) {
   try {
     const { candidate_code } = req.params;
 
-    // 1) Buscar datos base del candidato
+    // 1) Buscar datos base del candidato + nombres de catálogos (location, role, hiring_preference)
     const candRes = await client.query(
-      `SELECT * FROM "candidate" WHERE "candidate_code" = $1 LIMIT 1`,
+      `SELECT
+         c.*,
+         cl.name  AS location,
+         cr.name  AS role,
+         chp.name AS hiring_preference
+       FROM "candidate" c
+       LEFT JOIN "catalog_location"           cl  ON cl.location_id           = c.location_id
+       LEFT JOIN "catalog_role"               cr  ON cr.role_id                = c.role_id
+       LEFT JOIN "catalog_hiring_preference"  chp ON chp.hiring_preference_id = c.hiring_preference_id
+       WHERE c.candidate_code = $1
+       LIMIT 1`,
       [candidate_code]
     );
 
@@ -767,7 +797,13 @@ export async function getCandidateByCode(req, res) {
     return res.json({
       ok: true,
       data: {
-        candidate: c,
+        candidate: {
+          ...c,
+          // Exponemos skillset directamente para facilitar el formulario de edición
+          skillset: skillRes.rows[0]?.note_text ?? null,
+          // cv_url normalizado también como cv para el frontend
+          cv: c.cv_url ?? null,
+        },
         stack: stackRes.rows,
         lastCompensation: compRes.rows[0] || null,
         lastVisa: visaRes.rows[0] || null,
