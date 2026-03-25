@@ -24,6 +24,7 @@ export async function candidatesSearch(req, res) {
     const limit = Math.min(Number(req.body?.limit ?? 50), 200);
 
     //Campos de texto buscables con LIKE
+    // Nota: estos campos deben prefijarse con "v." en WHERE ya que hacemos JOIN con candidate
     const textSearchable = [
       "candidate_code",
       "full_name",
@@ -36,8 +37,8 @@ export async function candidatesSearch(req, res) {
       "availability_notes",
       "cost_text",
       "hiring_preference",
-      "technologies",  
-      "skills",        
+      "technologies",
+      "skills",
     ];
 
     //Campos numéricos — usan = o BETWEEN, nunca LIKE
@@ -55,9 +56,16 @@ export async function candidatesSearch(req, res) {
 
     // ─── Sin query: trae últimos ────────────────────────────────────────────
     if (!qRaw) {
-      // En Postgres, limit va directo, pero para ser consistentes usamos $1
       const result = await pool1.query(
-        `SELECT * FROM v_candidate_profile ORDER BY candidate_id DESC LIMIT $1`,
+        `SELECT
+           v.*,
+           c.email,
+           c.phone,
+           c.linkedin_url  AS linkedin,
+           c.cv_url        AS cv
+         FROM v_candidate_profile v
+         LEFT JOIN "candidate" c ON c.candidate_id = v.candidate_id
+         ORDER BY v.candidate_id DESC LIMIT $1`,
         [limit]
       );
       return res.json({ ok: true, tier, q: "", count: result.rows.length, data: applyTier(result.rows, tier) });
@@ -114,8 +122,9 @@ export async function candidatesSearch(req, res) {
         whereParts.push(`("${ff.col}" = $${pIdx++})`);
         params.push(ff.value);
       } else {
-        // Usamos ILIKE para que no importe mayúsculas/minúsculas en Postgres
-        whereParts.push(`("${ff.col}" ILIKE $${pIdx++})`);
+        // Columnas de v_candidate_profile se prefijan con v. para evitar ambigüedad
+        const colRef = ["email","phone"].includes(ff.col) ? `c."${ff.col}"` : `v."${ff.col}"`;
+        whereParts.push(`(${colRef} ILIKE $${pIdx++})`);
         params.push(`%${ff.value}%`);
       }
     }
@@ -134,7 +143,8 @@ export async function candidatesSearch(req, res) {
 
       // Siempre busca en campos de texto también
       for (const col of textSearchable) {
-        orParts.push(`("${col}" ILIKE $${pIdx++})`);
+        const colRef = ["email","phone"].includes(col) ? `c."${col}"` : `v."${col}"`;
+        orParts.push(`(${colRef} ILIKE $${pIdx++})`);
         params.push(`%${token}%`);
       }
 
@@ -144,7 +154,7 @@ export async function candidatesSearch(req, res) {
     }
 
     if (whereParts.length === 0) {
-      whereParts.push(`("full_name" ILIKE $${pIdx++})`);
+      whereParts.push(`(v."full_name" ILIKE $${pIdx++})`);
       params.push(`%${qRaw}%`);
     }
 
@@ -156,28 +166,34 @@ export async function candidatesSearch(req, res) {
       // Postgres usa COALESCE en lugar de IFNULL
       orderSql = `
         ORDER BY
-          ABS(COALESCE("english_score", 999999) - $${pIdx++}) ASC,
-          ABS(COALESCE("years_experience", 999999) - $${pIdx++}) ASC,
-          "full_name" ASC
+          ABS(COALESCE(v."english_score", 999999) - $${pIdx++}) ASC,
+          ABS(COALESCE(v."years_experience", 999999) - $${pIdx++}) ASC,
+          v."full_name" ASC
       `;
       params.push(Number(firstNum), Number(firstNum));
     } else {
       const firstToken = freeTokens[0] ?? qRaw;
       orderSql = `
         ORDER BY
-          ("full_name" ILIKE $${pIdx++} || '%') DESC,
-          "full_name" ASC
+          (v."full_name" ILIKE $${pIdx++} || '%') DESC,
+          v."full_name" ASC
       `;
       params.push(firstToken);
     }
 
     params.push(limit);
     const sql = `
-      SELECT *
-      FROM v_candidate_profile
+      SELECT
+        v.*,
+        c.email,
+        c.phone,
+        c.linkedin_url  AS linkedin,
+        c.cv_url        AS cv
+      FROM v_candidate_profile v
+      LEFT JOIN "candidate" c ON c.candidate_id = v.candidate_id
       WHERE ${whereParts.join(" AND ")}
       ${orderSql}
-      LIMIT $${pIdx++} 
+      LIMIT $${pIdx++}
     `;
 
     const result = await pool1.query(sql, params);
@@ -196,10 +212,13 @@ function applyTier(rows, tier) {
   
   const alwaysInclude = [
     "candidate_id",
+    "candidate_code",
     "hiring_preference",
     "hiring_preference_id",
     "technologies",
     "skills",
+    "role",
+    "location",
   ];
 
   return rows.map(r => {
@@ -264,27 +283,27 @@ const fieldSpecs = {
   usuario: [
     "candidate_code",
     "full_name",
+    "email",
+    "phone",
     "years_experience",
     "skillset",
     "last_update",
     "location",
     "english_score",
     "linkedin",
-    "phone",
-    "email",
     "cv",
   ],
   gerente: [
     "candidate_code",
     "full_name",
+    "email",
+    "phone",
     "years_experience",
     "skillset",
     "last_update",
     "location",
     "english_score",
     "linkedin",
-    "phone",
-    "email",
     "cv",
     "tarifa",
     "costo_expectativa",
@@ -292,14 +311,14 @@ const fieldSpecs = {
   administrador: [
     "candidate_code",
     "full_name",
+    "email",
+    "phone",
     "years_experience",
     "skillset",
     "last_update",
     "location",
     "english_score",
     "linkedin",
-    "phone",
-    "email",
     "cv",
     "tarifa",
     "costo_expectativa",
@@ -343,7 +362,15 @@ export async function profileViewByRole(req, res) {
     const total = parseInt(countRes.rows[0].total);
 
     const result = await pool1.query(
-      `SELECT * FROM v_candidate_profile ORDER BY candidate_id DESC LIMIT $1 OFFSET $2`,
+      `SELECT
+         v.*,
+         c.email,
+         c.phone,
+         c.linkedin_url  AS linkedin,
+         c.cv_url        AS cv
+       FROM v_candidate_profile v
+       LEFT JOIN "candidate" c ON c.candidate_id = v.candidate_id
+       ORDER BY v.candidate_id DESC LIMIT $1 OFFSET $2`,
       [limit, offset]
     );
 
@@ -387,16 +414,34 @@ export async function addRecruiterManager(req, res) {
 
     const toArray = (v) => (!v ? [] : Array.isArray(v) ? v : [v]);
 
-    // Helper actualizado para Postgres ($1 y .rows)
+    // Helper: busca por nombre/id, devuelve null si no existe
     const resolveId = async ({ table, idCol, nameCol, value }) => {
       if (!value) return null;
       if (typeof value === "number" || /^\d+$/.test(String(value).trim())) return Number(value);
-
       const result = await client.query(
         `SELECT "${idCol}" AS id FROM "${table}" WHERE "${nameCol}" = $1 LIMIT 1`,
         [String(value).trim()]
       );
       return result.rows.length ? result.rows[0].id : null;
+    };
+
+    // Helper: obtiene o crea una tecnología por nombre, devuelve su ID
+    const resolveOrCreateTech = async (techName) => {
+      if (!techName) return null;
+      const name = String(techName).trim();
+      if (!name) return null;
+      // Buscar primero
+      const found = await client.query(
+        `SELECT technology_id AS id FROM "catalog_technology" WHERE ct_name_tech = $1 LIMIT 1`,
+        [name]
+      );
+      if (found.rows.length) return found.rows[0].id;
+      // Si no existe, crearla
+      const created = await client.query(
+        `INSERT INTO "catalog_technology" (ct_name_tech) VALUES ($1) RETURNING technology_id AS id`,
+        [name]
+      );
+      return created.rows[0].id;
     };
 
     // Iniciamos transacción en Postgres
@@ -447,13 +492,13 @@ export async function addRecruiterManager(req, res) {
       );
     }
 
-    // 4) INSERT stack (Uso de ON CONFLICT en lugar de INSERT IGNORE)
+    // 4) INSERT stack — crea la tecnología si no existe en el catálogo
     const techValues = toArray(Tecnologia);
     for (const t of techValues) {
-      const techId = await resolveId({ table: "catalog_technology", idCol: "technology_id", nameCol: "ct_name_tech", value: t });
+      const techId = await resolveOrCreateTech(t);
       if (techId) {
         await client.query(
-          `INSERT INTO "candidate_stack" ("candidate_id", "technology_id") 
+          `INSERT INTO "candidate_stack" ("candidate_id", "technology_id")
            VALUES ($1, $2) ON CONFLICT DO NOTHING`,
           [candidateId, techId]
         );
@@ -577,16 +622,32 @@ export async function updateCandidateByCode(req, res) {
 
     const toArray = (v) => (!v ? [] : Array.isArray(v) ? v : [v]);
 
-    // Helper para resolver IDs en Postgres ($1 y .rows)
+    // Helper: busca por nombre/id
     const resolveId = async ({ table, idCol, nameCol, value }) => {
       if (!value) return null;
       if (typeof value === "number" || /^\d+$/.test(String(value).trim())) return Number(value);
-
       const result = await client.query(
         `SELECT "${idCol}" AS id FROM "${table}" WHERE "${nameCol}" = $1 LIMIT 1`,
         [String(value).trim()]
       );
       return result.rows.length ? result.rows[0].id : null;
+    };
+
+    // Helper: obtiene o crea una tecnología por nombre
+    const resolveOrCreateTech = async (techName) => {
+      if (!techName) return null;
+      const name = String(techName).trim();
+      if (!name) return null;
+      const found = await client.query(
+        `SELECT technology_id AS id FROM "catalog_technology" WHERE ct_name_tech = $1 LIMIT 1`,
+        [name]
+      );
+      if (found.rows.length) return found.rows[0].id;
+      const created = await client.query(
+        `INSERT INTO "catalog_technology" (ct_name_tech) VALUES ($1) RETURNING technology_id AS id`,
+        [name]
+      );
+      return created.rows[0].id;
     };
 
     await client.query('BEGIN');
@@ -670,10 +731,10 @@ export async function updateCandidateByCode(req, res) {
     if (Tecnologia !== undefined) {
       const techValues = toArray(Tecnologia);
       for (const t of techValues) {
-        const tId = await resolveId({ table: "catalog_technology", idCol: "technology_id", nameCol: "ct_name_tech", value: t });
+        const tId = await resolveOrCreateTech(t);
         if (tId) {
           await client.query(
-            `INSERT INTO "candidate_stack" ("candidate_id", "technology_id") 
+            `INSERT INTO "candidate_stack" ("candidate_id", "technology_id")
              VALUES ($1, $2) ON CONFLICT DO NOTHING`,
             [candidateId, tId]
           );
