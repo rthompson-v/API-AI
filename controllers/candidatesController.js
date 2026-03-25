@@ -61,8 +61,7 @@ export async function candidatesSearch(req, res) {
            v.*,
            c.email,
            c.phone,
-           c.linkedin,
-           c.cv
+           c.cv_url AS cv
          FROM v_candidate_profile v
          LEFT JOIN "candidate" c ON c.candidate_id = v.candidate_id
          ORDER BY v.candidate_id DESC LIMIT $1`,
@@ -187,8 +186,7 @@ export async function candidatesSearch(req, res) {
         v.*,
         c.email,
         c.phone,
-        c.linkedin,
-        c.cv
+        c.cv_url AS cv
       FROM v_candidate_profile v
       LEFT JOIN "candidate" c ON c.candidate_id = v.candidate_id
       WHERE ${whereParts.join(" AND ")}
@@ -366,8 +364,7 @@ export async function profileViewByRole(req, res) {
          v.*,
          c.email,
          c.phone,
-         c.linkedin,
-         c.cv
+         c.cv_url AS cv
        FROM v_candidate_profile v
        LEFT JOIN "candidate" c ON c.candidate_id = v.candidate_id
        ORDER BY v.candidate_id DESC LIMIT $1 OFFSET $2`,
@@ -466,14 +463,14 @@ export async function addRecruiterManager(req, res) {
     // 2) INSERT candidate con RETURNING
     const candRes = await client.query(
       `INSERT INTO "candidate" (
-        "candidate_code", "full_name", "phone", "email", "cv",
+        "candidate_code", "full_name", "phone", "email", "cv_url",
         "location_id", "role_id", "english_score", "years_experience",
-        "hiring_preference_id", "linkedin"
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        "hiring_preference_id"
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
       RETURNING "candidate_id"`,
       [candidateCode, Name, Telefono || null, Email || null, CV || null,
        locationId, roleId, EnglishLevel ?? null, Experiencia ?? null,
-       hiringPrefId, req.body.Linkedin || null]
+       hiringPrefId]
     );
 
     const candidateId = candRes.rows[0].candidate_id;
@@ -673,7 +670,7 @@ export async function updateCandidateByCode(req, res) {
     if (Name !== undefined) { set.push(`"full_name" = $${pIdx++}`); vals.push(Name); }
     if (Telefono !== undefined) { set.push(`"phone" = $${pIdx++}`); vals.push(Telefono || null); }
     if (Email !== undefined) { set.push(`"email" = $${pIdx++}`); vals.push(Email || null); }
-    if (CV !== undefined) { set.push(`"cv" = $${pIdx++}`); vals.push(CV || null); }
+    if (CV !== undefined) { set.push(`"cv_url" = $${pIdx++}`); vals.push(CV || null); }
     if (EnglishLevel !== undefined) { set.push(`"english_score" = $${pIdx++}`); vals.push(EnglishLevel ?? null); }
     if (Experiencia !== undefined) { set.push(`"years_experience" = $${pIdx++}`); vals.push(Experiencia ?? null); }
 
@@ -692,12 +689,6 @@ export async function updateCandidateByCode(req, res) {
       const hpId = await resolveId({ table: "catalog_hiring_preference", idCol: "hiring_preference_id", nameCol: "name", value: HiringPreference });
       set.push(`"hiring_preference_id" = $${pIdx++}`);
       vals.push(hpId);
-    }
-
-    // Linkedin se guarda en la columna linkedin_url (o linkedin según tu esquema)
-    if (req.body.Linkedin !== undefined) {
-      set.push(`"linkedin" = $${pIdx++}`);
-      vals.push(req.body.Linkedin || null);
     }
 
     if (set.length > 0) {
@@ -863,7 +854,7 @@ export async function getCandidateByCode(req, res) {
           // Exponemos skillset directamente para facilitar el formulario de edición
           skillset: skillRes.rows[0]?.note_text ?? null,
           // cv_url normalizado también como cv para el frontend
-          cv: c.cv ?? null,
+          cv: c.cv_url ?? null,
         },
         stack: stackRes.rows,
         lastCompensation: compRes.rows[0] || null,
