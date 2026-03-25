@@ -504,24 +504,23 @@ export async function addRecruiterManager(req, res) {
       );
     }
 
-    // 4) INSERT stack — crea la tecnología si no existe en el catálogo
+    // 4) INSERT stack — pre-resolvemos IDs de tecnología antes de insertar
     const techValues = toArray(Tecnologia);
     console.log("[addRecruiterManager] candidateId:", candidateId, "Tecnologias:", techValues);
     for (const t of techValues) {
       if (!t || String(t).trim() === "") continue;
       const techId = await resolveOrCreateTech(t);
-      console.log("[addRecruiterManager] tech:", t, "-> techId:", techId);
-      if (techId) {
+      console.log("[addRecruiterManager] tech:", t, "-> techId:", techId, typeof techId);
+      if (techId != null) {
         try {
           const stackRes = await client.query(
             `INSERT INTO "candidate_stack" ("candidate_id", "technology_id")
-             VALUES ($1, $2)`,
-            [candidateId, techId]
+             VALUES ($1::bigint, $2::integer)`,
+            [candidateId, Number(techId)]
           );
-          console.log("[addRecruiterManager] stack INSERT OK, rows:", stackRes.rowCount);
+          console.log("[addRecruiterManager] stack INSERT OK, rowCount:", stackRes.rowCount);
         } catch (stackErr) {
-          console.error("[addRecruiterManager] stack INSERT FAILED:", stackErr.message, "| candidate_id:", candidateId, "technology_id:", techId);
-          // No relanzar — intentar con la siguiente tecnología
+          console.error("[addRecruiterManager] stack INSERT FAILED:", stackErr.message, "code:", stackErr.code, "| candidate_id:", candidateId, "technology_id:", techId);
         }
       }
     }
@@ -755,18 +754,22 @@ export async function updateCandidateByCode(req, res) {
 
     if (Tecnologia !== undefined) {
       const techValues = toArray(Tecnologia);
-      console.log("[updateCandidate] Tecnologias a insertar:", techValues);
+      console.log("[updateCandidate] candidateId:", candidateId, "Tecnologias:", techValues);
       for (const t of techValues) {
         if (!t || String(t).trim() === "") continue;
         const tId = await resolveOrCreateTech(t);
-        console.log("[updateCandidate] tech:", t, "-> id:", tId);
-        if (tId) {
-          await client.query(
-            `INSERT INTO "candidate_stack" ("candidate_id", "technology_id")
-             VALUES ($1, $2)
-             ON CONFLICT DO NOTHING`,
-            [candidateId, tId]
-          );
+        console.log("[updateCandidate] tech:", t, "-> techId:", tId, typeof tId);
+        if (tId != null) {
+          try {
+            const stackRes = await client.query(
+              `INSERT INTO "candidate_stack" ("candidate_id", "technology_id")
+               VALUES ($1::bigint, $2::integer)`,
+              [candidateId, Number(tId)]
+            );
+            console.log("[updateCandidate] stack INSERT OK, rowCount:", stackRes.rowCount);
+          } catch (stackErr) {
+            console.error("[updateCandidate] stack INSERT FAILED:", stackErr.message, "code:", stackErr.code, "| candidate_id:", candidateId, "technology_id:", tId);
+          }
         }
       }
     }
