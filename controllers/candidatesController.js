@@ -59,8 +59,6 @@ export async function candidatesSearch(req, res) {
       const result = await pool1.query(
         `SELECT
            v.*,
-           c.email,
-           c.phone,
            c.cv_url AS cv
          FROM v_candidate_profile v
          LEFT JOIN "candidate" c ON c.candidate_id = v.candidate_id
@@ -122,7 +120,7 @@ export async function candidatesSearch(req, res) {
         params.push(ff.value);
       } else {
         // Columnas de v_candidate_profile se prefijan con v. para evitar ambigüedad
-        const colRef = ["email","phone"].includes(ff.col) ? `c."${ff.col}"` : `v."${ff.col}"`;
+        const colRef = `v."${ff.col}"`;
         whereParts.push(`(${colRef} ILIKE $${pIdx++})`);
         params.push(`%${ff.value}%`);
       }
@@ -142,7 +140,7 @@ export async function candidatesSearch(req, res) {
 
       // Siempre busca en campos de texto también
       for (const col of textSearchable) {
-        const colRef = ["email","phone"].includes(col) ? `c."${col}"` : `v."${col}"`;
+        const colRef = `v."${col}"`;
         orParts.push(`(${colRef} ILIKE $${pIdx++})`);
         params.push(`%${token}%`);
       }
@@ -184,8 +182,6 @@ export async function candidatesSearch(req, res) {
     const sql = `
       SELECT
         v.*,
-        c.email,
-        c.phone,
         c.cv_url AS cv
       FROM v_candidate_profile v
       LEFT JOIN "candidate" c ON c.candidate_id = v.candidate_id
@@ -362,8 +358,6 @@ export async function profileViewByRole(req, res) {
     const result = await pool1.query(
       `SELECT
          v.*,
-         c.email,
-         c.phone,
          c.cv_url AS cv
        FROM v_candidate_profile v
        LEFT JOIN "candidate" c ON c.candidate_id = v.candidate_id
