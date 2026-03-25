@@ -242,23 +242,31 @@ function applyTier(rows, tier) {
 }
 
 function resolveTier(reqUser) {
-  const roleName = String(reqUser?.RoleName ?? "").toLowerCase();
-  const roleId = Number(reqUser?.Role_CLP);
+  const roleName = String(reqUser?.RoleName ?? reqUser?.role ?? reqUser?.Role ?? "").toLowerCase();
+  const roleId   = Number(reqUser?.Role_CLP ?? reqUser?.role_id ?? reqUser?.roleId ?? 0);
 
-  // Ajusta estos IDs a los reales de tu tabla ROLE_USER
-  // Ejemplo: 1=Administrador, 2=Gerente, 3=Usuario, etc.
+  // Mapeo por ID — ajusta si tus IDs son diferentes
   const byId = {
     1: "usuario",
     2: "gerente",
     3: "administrador",
+    4: "administrador",
   };
 
-  if (Number.isFinite(roleId) && byId[roleId]) return byId[roleId];
+  if (Number.isFinite(roleId) && roleId > 0 && byId[roleId]) return byId[roleId];
 
-  // fallback por nombre
-  if (roleName.includes("admin")) return "administrador";
-  if (roleName.includes("gerente")) return "gerente";
-  if (roleName.includes("usuario")) return "usuario";
+  // Fallback por nombre de rol
+  if (roleName.includes("admin"))    return "administrador";
+  if (roleName.includes("gerente"))  return "gerente";
+  if (roleName.includes("manager"))  return "gerente";
+  if (roleName.includes("recruiter"))return "usuario";
+  if (roleName.includes("reclutador")) return "usuario";
+  if (roleName.includes("usuario"))  return "usuario";
+  if (roleName.includes("user"))     return "usuario";
+
+  // Si hay cualquier usuario autenticado, darle acceso de usuario base
+  // 'normal' queda solo para tokens inválidos o sin rol
+  if (reqUser) return "usuario";
 
   return "normal";
 }
@@ -267,12 +275,14 @@ const fieldSpecs = {
   normal: [
     "candidate_code",
     "full_name",
+    "email",
+    "phone",
     "years_experience",
     "skillset",
     "last_update",
     "location",
     "english_score",
-    "linkedin",
+    "cv",
   ],
   usuario: [
     "candidate_code",
