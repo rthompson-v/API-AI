@@ -506,18 +506,23 @@ export async function addRecruiterManager(req, res) {
 
     // 4) INSERT stack — crea la tecnología si no existe en el catálogo
     const techValues = toArray(Tecnologia);
-    console.log("[addRecruiterManager] Tecnologias a insertar:", techValues);
+    console.log("[addRecruiterManager] candidateId:", candidateId, "Tecnologias:", techValues);
     for (const t of techValues) {
       if (!t || String(t).trim() === "") continue;
       const techId = await resolveOrCreateTech(t);
-      console.log("[addRecruiterManager] tech:", t, "-> id:", techId);
+      console.log("[addRecruiterManager] tech:", t, "-> techId:", techId);
       if (techId) {
-        await client.query(
-          `INSERT INTO "candidate_stack" ("candidate_id", "technology_id")
-           VALUES ($1, $2)
-           ON CONFLICT DO NOTHING`,
-          [candidateId, techId]
-        );
+        try {
+          const stackRes = await client.query(
+            `INSERT INTO "candidate_stack" ("candidate_id", "technology_id")
+             VALUES ($1, $2)`,
+            [candidateId, techId]
+          );
+          console.log("[addRecruiterManager] stack INSERT OK, rows:", stackRes.rowCount);
+        } catch (stackErr) {
+          console.error("[addRecruiterManager] stack INSERT FAILED:", stackErr.message, "| candidate_id:", candidateId, "technology_id:", techId);
+          // No relanzar — intentar con la siguiente tecnología
+        }
       }
     }
 
