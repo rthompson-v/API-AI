@@ -488,7 +488,8 @@ export async function addRecruiterManager(req, res) {
        hiringPrefId]
     );
 
-    const candidateId = candRes.rows[0].candidate_id;
+    const candidateId = Number(candRes.rows[0].candidate_id);
+    console.log("[addRecruiterManager] candidateId type:", typeof candidateId, "value:", candidateId);
 
     // 3) INSERT notes (Postgres no soporta "VALUES ?" para arrays de arrays fácilmente)
     if (Skillset) {
@@ -513,6 +514,14 @@ export async function addRecruiterManager(req, res) {
       console.log("[addRecruiterManager] tech:", t, "-> techId:", techId, typeof techId);
       if (techId != null) {
         try {
+          // Reset sequence in case it's out of sync, then insert
+          await client.query(`
+            SELECT setval(
+              pg_get_serial_sequence('candidate_stack', 'candidate_stack_id'),
+              COALESCE((SELECT MAX(candidate_stack_id) FROM candidate_stack), 0) + 1,
+              false
+            )
+          `);
           const stackRes = await client.query(
             `INSERT INTO "candidate_stack" ("candidate_id", "technology_id")
              VALUES ($1::bigint, $2::integer)`,
@@ -520,12 +529,34 @@ export async function addRecruiterManager(req, res) {
           );
           console.log("[addRecruiterManager] stack INSERT OK, rowCount:", stackRes.rowCount);
         } catch (stackErr) {
-          console.error("[addRecruiterManager] stack INSERT FAILED:", stackErr.message, "code:", stackErr.code, "| candidate_id:", candidateId, "technology_id:", techId);
+          console.error("[addRecruiterManager] stack INSERT FAILED:", stackErr.message, "code:", stackErr.code);
+          // Si es sequence out of sync, intentar reset y retry
+          if (stackErr.code === '23505') {
+            try {
+              await client.query(`
+                SELECT setval(
+                  pg_get_serial_sequence('candidate_stack', 'candidate_stack_id'),
+                  (SELECT MAX(candidate_stack_id) FROM candidate_stack) + 1,
+                  false
+                )
+              `);
+              await client.query(
+                `INSERT INTO "candidate_stack" ("candidate_id", "technology_id")
+                 VALUES ($1::bigint, $2::integer)`,
+                [candidateId, Number(techId)]
+              );
+              console.log("[addRecruiterManager] stack INSERT OK after sequence reset");
+            } catch (retryErr) {
+              console.error("[addRecruiterManager] stack retry FAILED:", retryErr.message);
+            }
+          }
         }
       }
     }
 
+    console.log("[addRecruiterManager] About to COMMIT for candidateId:", candidateId);
     await client.query('COMMIT');
+    console.log("[addRecruiterManager] COMMIT done");
 
     return res.status(201).json({
       ok: true,
@@ -693,7 +724,8 @@ export async function updateCandidateByCode(req, res) {
       return res.status(404).json({ ok: false, error: "Candidato no encontrado" });
     }
 
-    const candidateId = candResult.rows[0].candidate_id;
+    const candidateId = Number(candResult.rows[0].candidate_id);
+    console.log("[updateCandidate] candidateId type:", typeof candidateId, "value:", candidateId);
 
     // 2) UPDATE dinámico de la tabla candidate
     const set = [];
@@ -761,6 +793,13 @@ export async function updateCandidateByCode(req, res) {
         console.log("[updateCandidate] tech:", t, "-> techId:", tId, typeof tId);
         if (tId != null) {
           try {
+            await client.query(`
+              SELECT setval(
+                pg_get_serial_sequence('candidate_stack', 'candidate_stack_id'),
+                COALESCE((SELECT MAX(candidate_stack_id) FROM candidate_stack), 0) + 1,
+                false
+              )
+            `);
             const stackRes = await client.query(
               `INSERT INTO "candidate_stack" ("candidate_id", "technology_id")
                VALUES ($1::bigint, $2::integer)`,
@@ -768,7 +807,26 @@ export async function updateCandidateByCode(req, res) {
             );
             console.log("[updateCandidate] stack INSERT OK, rowCount:", stackRes.rowCount);
           } catch (stackErr) {
-            console.error("[updateCandidate] stack INSERT FAILED:", stackErr.message, "code:", stackErr.code, "| candidate_id:", candidateId, "technology_id:", tId);
+            console.error("[updateCandidate] stack INSERT FAILED:", stackErr.message, "code:", stackErr.code);
+            if (stackErr.code === '23505') {
+              try {
+                await client.query(`
+                  SELECT setval(
+                    pg_get_serial_sequence('candidate_stack', 'candidate_stack_id'),
+                    (SELECT MAX(candidate_stack_id) FROM candidate_stack) + 1,
+                    false
+                  )
+                `);
+                await client.query(
+                  `INSERT INTO "candidate_stack" ("candidate_id", "technology_id")
+                   VALUES ($1::bigint, $2::integer)`,
+                  [candidateId, Number(tId)]
+                );
+                console.log("[updateCandidate] stack INSERT OK after sequence reset");
+              } catch (retryErr) {
+                console.error("[updateCandidate] stack retry FAILED:", retryErr.message);
+              }
+            }
           }
         }
       }
