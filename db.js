@@ -1,14 +1,15 @@
 import pg from "pg";
+import dns from "node:dns";
+
+// Fuerza que Node.js resuelva hostnames con IPv4 primero.
+// Necesario porque Railway no tiene ruta a las IPs IPv6 de Supabase.
+dns.setDefaultResultOrder("ipv4first");
+
 const { Pool } = pg;
 
 // Configuración común de SSL para Supabase
 const sslConfig = {
-  rejectUnauthorized: false, // Necesario para Supabase desde entornos externos
-};
-
-// Fuerza IPv4 — Railway no alcanza Supabase por IPv6
-const socketConfig = {
-  family: 4,
+  rejectUnauthorized: false,
 };
 
 export const pool1 = new Pool({
@@ -18,7 +19,6 @@ export const pool1 = new Pool({
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
   ssl: sslConfig,
-  socket: socketConfig,
 });
 
 export const pool2 = new Pool({
@@ -28,10 +28,9 @@ export const pool2 = new Pool({
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME2 || process.env.DB_NAME,
   ssl: sslConfig,
-  socket: socketConfig,
 });
 
-// En Postgres, usamos .connect() para probar
+// Verifica conexión al iniciar
 (async () => {
   try {
     const client = await pool1.connect();
