@@ -2,7 +2,7 @@ import { pool2 } from "../db.js";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 
-const JWT_SECRET = process.env.JWT_SECRET || "29d2ad5a9f5b799a430818f9f4d466855d9bf374e8ced2148241a39dffc66b40";
+const JWT_SECRET = process.env.JWT_SECRET;
 
 export async function login(req, res) {
   try {

@@ -511,7 +511,7 @@ export async function getModulesByTechnology(req, res) {
     const result = await pool1.query(
       `SELECT module_id AS id, module_catalogname AS name
        FROM catalog_module
-       WHERE technology_id = ?
+       WHERE technology_id = $1
        ORDER BY module_catalogname`,
       [technology_id]
     );
@@ -527,7 +527,7 @@ export async function getSubmodulesByModule(req, res) {
     const result = await pool1.query(
       `SELECT submodule_id AS id, subm_catalog_name AS name
        FROM catalog_submodule
-       WHERE module_id = ?
+       WHERE module_id = $1
        ORDER BY subm_catalog_name`,
       [module_id]
     );
